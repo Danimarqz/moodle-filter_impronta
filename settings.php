@@ -1,0 +1,161 @@
+<?php
+// This file is part of Moodle - https://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+/* Copyright (C) 2026 DaniMarqz. GPL-3.0-or-later; see LICENSE. */
+/**
+ * Settings for the Impronta filter.
+ *
+ * The Impronta backend URL is a class constant (\filter_impronta\impronta_api::URL),
+ * deliberately NOT editable here. Only the tenant credential, the local
+ * signing secret, and the watermark template are configured from Moodle.
+ *
+ * @package   filter_impronta
+
+ * @copyright  2026 DaniMarqz
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+
+defined('MOODLE_INTERNAL') || die();
+
+use filter_impronta\impronta_api;
+use filter_impronta\config;
+
+// Moodle incluye este fichero al construir el árbol de administración, y lo
+// hace SIN cargar ningún lib.php del plugin. De ahí que todo lo que use este
+// fichero tenga que ser una clase de classes/, que sí se autocarga: cuando
+// esto dependía de una constante de lib.php, la excepción no se quedaba en la
+// página de ajustes, reventaba cualquier página que construyera ese árbol —o
+// sea, el sitio entero.
+
+// Settings YA existe y YA se añade al árbol: lo crea y lo cuelga.
+// core\plugininfo\filter::load_settings(), que es quien incluye este fichero.
+// Aquí solo se rellena. Cuando esto creaba su propia página y la añadía con
+// $ADMIN->add(), el mismo objeto entraba dos veces y los ajustes salían
+// duplicados en la lista de Filtros.
+if ($hassiteconfig) {
+    // Bloque informativo, lo primero que se ve. Quien abre esta página suele
+    // haber heredado el plugin de otra persona y no sabe qué hay al otro lado;
+    // los enlaces son la respuesta a eso, y el de "quién es este alumno" es la
+    // herramienta que hace falta cuando llega un aviso.
+    //
+    // moodle_url y no una cadena a pelo: el sitio puede estar en un subdirectorio
+    // y un enlace absoluto a /filter/... daría 404 justo ahí.
+    $settings->add(new admin_setting_heading(
+        'filter_impronta/about',
+        get_string('aboutheading', 'filter_impronta'),
+        get_string(
+            'aboutdesc',
+            'filter_impronta',
+            (new moodle_url('/filter/impronta/quien.php'))->out(false)
+        )
+    ));
+
+    $settings->add(new admin_setting_heading(
+        'filter_impronta/backend',
+        get_string('backendheading', 'filter_impronta'),
+        get_string('backenddesc', 'filter_impronta', impronta_api::URL)
+    ));
+
+    $settings->add(new admin_setting_configpasswordunmask(
+        'filter_impronta/apikey',
+        get_string('apikey', 'filter_impronta'),
+        get_string('apikeydesc', 'filter_impronta'),
+        ''
+    ));
+
+    $settings->add(new admin_setting_configpasswordunmask(
+        'filter_impronta/secretkey',
+        get_string('secretkey', 'filter_impronta'),
+        get_string('secretkeydesc', 'filter_impronta'),
+        ''
+    ));
+
+    // This is a POST action rather than a setting value: credentials remain in
+    // Moodle's config store and the browser only submits the one-time sesskey.
+    $registerurl = (new moodle_url('/filter/impronta/register.php'))->out(false);
+    $registrationhtml = '<p>' . get_string('registersitedesc', 'filter_impronta') . '</p>';
+    if (config::get('apikey', '') !== '' && config::get('secretkey', '') !== '') {
+        $registrationhtml .= '<button type="submit" class="btn btn-primary"'
+            . ' formaction="' . s($registerurl) . '" formmethod="post">'
+            . s(get_string('registersitebutton', 'filter_impronta')) . '</button>';
+    } else {
+        $registrationhtml .= '<p>' . s(get_string('registerneedscredentials', 'filter_impronta')) . '</p>';
+    }
+    $settings->add(new admin_setting_description(
+        'filter_impronta/register',
+        get_string('registersite', 'filter_impronta'),
+        $registrationhtml
+    ));
+
+    $settings->add(new admin_setting_heading(
+        'filter_impronta/watermark',
+        get_string('watermarkheading', 'filter_impronta'),
+        get_string('watermarkdesc', 'filter_impronta')
+    ));
+
+    $settings->add(new admin_setting_configtext(
+        'filter_impronta/watermarktemplate',
+        get_string('watermarktemplate', 'filter_impronta'),
+        get_string('watermarktemplatedesc', 'filter_impronta'),
+        '{fullname} - {idnumber}',
+        PARAM_RAW,
+        60
+    ));
+
+    $settings->add(new admin_setting_configtext(
+        'filter_impronta/mobileusers',
+        get_string('mobileusers', 'filter_impronta'),
+        get_string('mobileusersdesc', 'filter_impronta'),
+        '',
+        PARAM_RAW,
+        40
+    ));
+
+    $settings->add(new admin_setting_configcolourpicker(
+        'filter_impronta/watermarkcolor',
+        get_string('watermarkcolor', 'filter_impronta'),
+        get_string('watermarkcolordesc', 'filter_impronta'),
+        '#ffffff'
+    ));
+
+    $settings->add(new admin_setting_heading(
+        'filter_impronta/access',
+        get_string('accessheading', 'filter_impronta'),
+        get_string('accessdesc', 'filter_impronta')
+    ));
+
+    $settings->add(new admin_setting_configcheckbox(
+        'filter_impronta/requirecourse',
+        get_string('requirecourse', 'filter_impronta'),
+        get_string('requirecoursedesc', 'filter_impronta'),
+        '1'
+    ));
+
+    $settings->add(new admin_setting_configcheckbox(
+        'filter_impronta/bindip',
+        get_string('bindip', 'filter_impronta'),
+        get_string('bindipdesc', 'filter_impronta'),
+        '0'
+    ));
+
+    $settings->add(new admin_setting_configtext(
+        'filter_impronta/tokenttl',
+        get_string('tokenttl', 'filter_impronta'),
+        get_string('tokenttldesc', 'filter_impronta'),
+        25200,
+        PARAM_INT,
+        10
+    ));
+}

@@ -1,0 +1,152 @@
+<?php
+// This file is part of Moodle - https://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+/* Copyright (C) 2026 DaniMarqz. GPL-3.0-or-later; see LICENSE. */
+/**
+ * Latido de una sesión de reproducción, reenviado a Impronta server-side.
+ *
+ * El reproductor late aquí en vez de llamar a Impronta directamente por el mismo
+ * motivo que events.php: el apikey del tenant no puede bajar al navegador.
+ * Filtrarlo dejaría a cualquier alumno pedir la playlist de cualquier clase del
+ * catálogo, que es lo que ese apikey autoriza.
+ *
+ * Para qué sirve latir:
+ *
+ *   1. Mantiene viva la sesión. Sin latidos muere sola a los cinco minutos, y
+ *      con ella se pierde el recuento de reproducciones simultáneas que detecta
+ *      cuentas compartidas.
+ *   2. Reporta cuánto vídeo se ha visto. Ese número es el DENOMINADOR de la
+ *      detección de descarga masiva: sin él, un alumno viendo clase y alguien
+ *      bajándose el temario piden segmentos a un ritmo parecido y no se
+ *      distinguen.
+ *   3. Devuelve si la sesión fue expulsada o el acceso revocado, que es como el
+ *      reproductor se entera de que tiene que parar y decir por qué.
+ *
+ * El identificador de sesión NO viaja en la petición: lo guardó playlist.php en
+ * la caché del sitio y se recupera aquí. Así el cliente no puede latir por una
+ * sesión que no sea la suya.
+ *
+ * Control de acceso: el mismo que playlist.php y events.php — token HMAC (t/e/c)
+ * atado a la ruta del vídeo, y matrícula viva en el curso.
+ *
+ * @package   filter_impronta
+
+ * @copyright  2026 DaniMarqz
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+
+// phpcs:ignore moodle.Files.RequireLogin.Missing -- Token and course enrolment authorize this endpoint.
+require_once(__DIR__ . '/../../config.php');
+
+use filter_impronta\impronta_api;
+use filter_impronta\request;
+use filter_impronta\token;
+
+// Con OPTIONS: es un POST con Content-Type JSON, que dispara comprobación
+// previa desde el webview de la app.
+request::send_cors_headers(true);
+
+$rawf = optional_param('f', null, PARAM_RAW_TRIMMED);
+$token = optional_param('t', null, PARAM_ALPHANUMEXT);
+$expires = optional_param('e', null, PARAM_INT);
+$courseid = optional_param('c', 0, PARAM_INT);
+// Ver playlist.php: identidad firmada en el token, para el camino de la app.
+$userid = optional_param('u', 0, PARAM_INT);
+$authorizationgroupid = optional_param('g', '', PARAM_ALPHANUMEXT);
+$playbackid = optional_param('p', '', PARAM_ALPHANUMEXT);
+$mode = optional_param('m', '', PARAM_ALPHA);
+
+/**
+ * Termina la petición con un código y sin cuerpo.
+ *
+ * @param int $status
+ */
+function impronta_heartbeat_fail(int $status): void {
+    http_response_code($status);
+    header('Content-Type: text/plain; charset=utf-8');
+    exit;
+}
+
+$path = trim(preg_replace('#/+#', '/', str_replace('\\', '/', (string) $rawf)), '/');
+if ($path === '' || strpos($path, '..') !== false) {
+    impronta_heartbeat_fail(400);
+}
+
+if (empty($token) || empty($expires)) {
+    impronta_heartbeat_fail(403);
+}
+
+$unused = false;
+if (
+    token::authorize(
+        $path,
+        $token,
+        (int) $expires,
+        (int) $courseid,
+        (int) $userid,
+        $unused,
+        $authorizationgroupid,
+        $playbackid,
+        $mode
+    ) !== null
+) {
+    impronta_heartbeat_fail(403);
+}
+
+$sessionid = impronta_api::recall_session($path, (int) $userid, $playbackid);
+if ($sessionid === '') {
+    // No hay sesión que renovar: o la playlist se pidió hace demasiado, o esta
+    // instalación no tiene caché compartida entre peticiones. 409 y no error:
+    // el reproductor debe seguir reproduciendo, solo que sin latir.
+    impronta_heartbeat_fail(409);
+}
+
+$payload = json_decode((string) file_get_contents('php://input'), true);
+$watched = 0;
+$batchid = '';
+if (is_array($payload)) {
+    if (isset($payload['watchedSeconds']) && is_numeric($payload['watchedSeconds'])) {
+        $watched = max(0, (int) $payload['watchedSeconds']);
+    }
+    // Idempotencia de facturación: el mismo lote reenviado no se cuenta dos
+    // veces. Es opaco para el plugin, pero se valida forma y longitud antes de
+    // reenviarlo para no meter basura en el cuerpo hacia la API.
+    if (
+        isset($payload['batchId']) && is_string($payload['batchId'])
+        && preg_match('/^[A-Za-z0-9._-]{1,128}$/', $payload['batchId']) === 1
+    ) {
+        $batchid = $payload['batchId'];
+    } else if (isset($payload['batchId'])) {
+        // Forma invalida: se descarta para no reenviar basura a la API, pero se
+        // deja rastro. Sin esta linea, un cliente con el batchId mal formado
+        // apagaria la idempotencia en silencio y un reintento contaria doble.
+        debugging('filter_impronta: batchId descartado por forma invalida', DEBUG_NORMAL);
+    }
+}
+
+$respuesta = impronta_api::heartbeat($path, (int) $userid, $sessionid, $watched, $authorizationgroupid, $batchid);
+if ($respuesta === null) {
+    // Perder un latido no puede parar la reproducción: el siguiente lo arregla,
+    // y si de verdad hay un bloqueo lo corta el propio segmento con un 403.
+    impronta_heartbeat_fail(502);
+}
+
+header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: no-store');
+echo json_encode([
+    'evicted' => !empty($respuesta['evicted']),
+    'blocked' => !empty($respuesta['blocked']),
+    'heartbeatSeconds' => isset($respuesta['heartbeatSeconds']) ? (int) $respuesta['heartbeatSeconds'] : 120,
+]);

@@ -1,0 +1,184 @@
+<?php
+// This file is part of Moodle - https://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
+/* Copyright (C) 2026 DaniMarqz. GPL-3.0-or-later; see LICENSE. */
+/**
+ * Server-side relay for player analytics events.
+ *
+ * The player beacon posts here instead of calling Impronta directly so the
+ * tenant's API key never leaves the Moodle server. Previously the key was
+ * inlined in a <script> every learner could read, which defeated the whole
+ * access model: that same key mints CloudFront signatures for the entire
+ * catalog via POST /moodle/authorize.
+ *
+ * Access control is the same as playlist.php: the request must carry a
+ * valid HMAC token (t/e/c) bound to the video path, and the viewer must be
+ * enrolled in the course. Events naming any other video are dropped rather
+ * than forwarded.
+ *
+ * @package   filter_impronta
+
+ * @copyright  2026 DaniMarqz
+ * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+
+// phpcs:ignore moodle.Files.RequireLogin.Missing -- Token and course enrolment authorize this endpoint.
+require_once(__DIR__ . '/../../config.php');
+
+use filter_impronta\impronta_api;
+use filter_impronta\request;
+use filter_impronta\token;
+
+// Igual que playlist.php, y además contestando al OPTIONS: el beacon de la app
+// es un POST con Content-Type JSON, que dispara comprobación previa.
+request::send_cors_headers(true);
+
+$rawf = optional_param('f', null, PARAM_RAW_TRIMMED);
+$token = optional_param('t', null, PARAM_ALPHANUMEXT);
+$expires = optional_param('e', null, PARAM_INT);
+$courseid = optional_param('c', 0, PARAM_INT);
+// Ver playlist.php: identidad firmada en el token, para el camino de la app.
+$userid = optional_param('u', 0, PARAM_INT);
+$authorizationgroupid = optional_param('g', '', PARAM_ALPHANUMEXT);
+$playbackid = optional_param('p', '', PARAM_ALPHANUMEXT);
+$mode = optional_param('m', '', PARAM_ALPHA);
+
+/**
+ * Ends the request with a bare status code (no body worth leaking).
+ */
+function impronta_events_fail(int $status): void {
+    http_response_code($status);
+    header('Content-Type: text/plain; charset=utf-8');
+    exit;
+}
+
+$path = trim(preg_replace('#/+#', '/', str_replace('\\', '/', (string) $rawf)), '/');
+if ($path === '' || strpos($path, '..') !== false) {
+    impronta_events_fail(400);
+}
+
+if (empty($token) || empty($expires)) {
+    impronta_events_fail(403);
+}
+
+$unused = false;
+if (
+    token::authorize(
+        $path,
+        $token,
+        (int) $expires,
+        (int) $courseid,
+        (int) $userid,
+        $unused,
+        $authorizationgroupid,
+        $playbackid,
+        $mode
+    ) !== null
+) {
+    impronta_events_fail(403);
+}
+
+$payload = json_decode((string) file_get_contents('php://input'), true);
+if (!is_array($payload)) {
+    impronta_events_fail(400);
+}
+
+$flushreasons = ['interval', 'pause', 'complete', 'hidden', 'pagehide', 'dispose', 'tamper'];
+// Los clientes anteriores no enviaban motivo: trátalo como un lote periódico
+// para que una página abierta antes del despliegue no pierda su analítica.
+$flushreason = isset($payload['flushReason']) && is_string($payload['flushReason'])
+    ? $payload['flushReason'] : 'interval';
+if (!in_array($flushreason, $flushreasons, true)) {
+    impronta_events_fail(400);
+}
+
+// El subject es determinista desde el id de usuario y el secret del plugin
+// (impronta_api::subject): recalcularlo aqui e ignorar el del payload,
+// para que el cliente no pueda reportar analitica bajo un identificador
+// ajeno. La identidad sale del token firmado cuando viene (camino de la app,
+// sin cookie) y de la sesion en caso contrario; token::authorize ya
+// ha exigido una de las dos, asi que el subject nunca es vacio aqui.
+$subject = impronta_api::subject((int) $userid);
+$events = isset($payload['events']) && is_array($payload['events']) ? $payload['events'] : [];
+if (empty($events)) {
+    impronta_events_fail(400);
+}
+
+// Cómo se está autorizando el media y desde dónde se reproduce. Las dos las
+// decide el SERVIDOR, no el cliente: el modo viene del parámetro que puso el
+// propio reproductor al construir esta URL, y el origen de la cabecera Origin
+// que pone el navegador y el JavaScript no puede falsear.
+//
+// Sirve para responder dos preguntas que hasta ahora no se podían: qué
+// proporción de reproducciones va por cookies (tenants con dominio propio,
+// seguridad alta) frente a URLs firmadas, y cuánto se consume desde la app
+// frente al navegador.
+$modo = $mode === 'scorm' ? 'scorm' : (optional_param('modo', '', PARAM_ALPHA) === 'cookie' ? 'cookie' : 'signedurl');
+
+$origen = $_SERVER['HTTP_ORIGIN'] ?? '';
+$origenhost = $origen !== '' ? (parse_url($origen, PHP_URL_HOST) ?: '') : '';
+if ($origenhost === 'localhost' || $origenhost === '127.0.0.1') {
+    // El webview de la app siempre está en localhost, con esquema variable
+    // según plataforma (http://, capacitor://, ionic://).
+    $cliente = 'app';
+} else if ($origen === '') {
+    // Sin Origin: navegación normal desde la propia página, mismo origen.
+    $cliente = 'web';
+} else {
+    $cliente = 'web';
+}
+
+// El token es de un solo video: descartar cualquier evento que nombre otro
+// (defensa en profundidad, el cliente nunca debería mandarlos).
+$clean = [];
+foreach ($events as $ev) {
+    if (!is_array($ev)) {
+        continue;
+    }
+    $vp = isset($ev['videoPath']) && is_string($ev['videoPath']) ? $ev['videoPath'] : '';
+    $type = isset($ev['type']) && is_string($ev['type']) ? $ev['type'] : '';
+    if ($vp !== $path || $type === '') {
+        continue;
+    }
+    $clean[] = [
+         'videoPath' => $vp,
+         'type' => $type,
+         'positionSeconds' => isset($ev['positionSeconds']) && is_numeric($ev['positionSeconds'])
+             ? (int) $ev['positionSeconds'] : 0,
+         'ts' => isset($ev['ts']) && is_numeric($ev['ts'])
+             ? (int) $ev['ts'] : (int) (microtime(true) * 1000),
+         'mode' => $modo,
+         'client' => $cliente,
+        'authorizationGroupId' => $authorizationgroupid,
+    ];
+}
+
+if (empty($clean)) {
+    impronta_events_fail(400);
+}
+
+// La correlación la fija el servidor: los identificadores del JSON del cliente
+// no se leen ni se reenvían. Solo el último evento del lote lleva el marcador.
+$sessionid = impronta_api::recall_session($path, (int) $userid, $playbackid);
+$last = count($clean) - 1;
+$clean[$last]['playbackId'] = $playbackid;
+$clean[$last]['sessionId'] = $sessionid;
+$clean[$last]['flushReason'] = $flushreason;
+
+if (!impronta_api::post_events(['subject' => $subject, 'events' => $clean])) {
+    impronta_events_fail(502);
+}
+
+http_response_code(204);
