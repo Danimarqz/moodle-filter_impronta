@@ -1,0 +1,26 @@
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Dependencies and generated files
+vendor/
+node_modules/
+coverage/
+build/
+dist/
+
+# Local Moodle development data
+moodledata/
+config.php
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Test and tool output
+*.log
+*.tmp
+*.zip
