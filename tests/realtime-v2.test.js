@@ -59,6 +59,48 @@ test('opens WSS with heartbeat credentials without an HTTP token request', async
   assert.equal(sent[0].bufferedEnd, 31);
 });
 
+test('closes WSS at ended and does not keep the heartbeat interval alive', async () => {
+  let closeCount = 0;
+  const player = {
+    handlers: {},
+    on(type, fn) { (this.handlers[type] ||= []).push(fn); },
+    emit(type) { for (const fn of this.handlers[type] || []) fn(); },
+    paused() { return false; },
+    currentTime() { return 72; },
+    bufferedEnd() { return 72; },
+  };
+  const context = {
+    window: {},
+    WebSocket: function Socket() {
+      this.readyState = 0;
+      this.send = () => {};
+      this.close = () => { closeCount += 1; this.readyState = 3; if (this.onclose) this.onclose(); };
+      Promise.resolve().then(() => { this.readyState = 1; this.onopen(); });
+    },
+    setInterval() { return 1; },
+    clearInterval() {},
+    setTimeout() { return 2; },
+    clearTimeout() {},
+    console,
+  };
+  context.window = context;
+  vm.runInNewContext(source, context);
+  const client = context.ImprontaRealtimeV2(player, {
+    enabled: true,
+    realtimeUrl: '/realtime',
+    realtimeSocketUrl: 'wss://example/ws',
+    realtimeToken: 'signed',
+    realtimeExpiresAt: Math.floor(Date.now() / 1000) + 3600,
+    sessionId: 's1',
+    videoId: 'v1'
+  });
+  player.emit('play');
+  await new Promise((resolve) => setImmediate(resolve));
+  player.emit('ended');
+  assert.equal(closeCount, 1);
+  assert.equal(client.state(), 'disconnected');
+});
+
 test('does not throw or create transport when disabled', () => {
   const player = {on() { throw new Error('must not attach'); }};
   const context = {window: {}, console};

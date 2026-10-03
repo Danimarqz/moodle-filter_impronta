@@ -199,6 +199,10 @@
         // player's frequent timeupdate events cancel it and open eagerly.
         if (active && !socket && !reconnectTimer && !connecting && cfg.sessionId) { open(); }
       });
+      // Once the video has ended there is no active playback state to report.
+      // Closing here also invalidates the reconnect generation, so a socket
+      // that drops at the end cannot start another connection.
+      player.on('ended', stop);
       player.on('dispose', function() { destroyed = true; stop(); });
     }
 
