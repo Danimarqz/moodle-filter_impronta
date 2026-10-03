@@ -81,6 +81,8 @@ class mobile {
             'vttjs' => player::asset_url('vendor/video.js/vtt/vtt.min.js'),
             'watermarkjs' => player::asset_url('watermark.js'),
             'watermarkfitjs' => player::asset_url('js/watermark-fit.js'),
+            'analyticsv2js' => player::asset_url('js/analytics-v2.js'),
+            'realtimev2js' => player::asset_url('js/realtime-v2.js'),
             'renewjs' => player::asset_url('js/playback-renew.js'),
         ], JSON_UNESCAPED_SLASHES);
         $appjs = json_encode(player::asset_url('js/app-player.js'), JSON_UNESCAPED_SLASHES);
@@ -95,6 +97,14 @@ class mobile {
     return site.read('filter_impronta_renew', {url: url},
       {getFromCache: false, saveToCache: false, emergencyCache: false});
   };
+  var a = document.createElement('script');
+  a.src = window.improntaApp.analyticsv2js;
+  a.async = false;
+  document.head.appendChild(a);
+  var r = document.createElement('script');
+  r.src = window.improntaApp.realtimev2js;
+  r.async = false;
+  document.head.appendChild(r);
   var s = document.createElement('script');
   s.src = {$appjs};
   s.async = false;

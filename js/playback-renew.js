@@ -5,12 +5,18 @@ window.ImprontaPlaybackRenew = function(cfg, request) {
   return function() {
     if (pending) { return pending; }
     pending = Promise.resolve().then(function() { return request(cfg.playlistUrl); }).then(function(fresh) {
-      if (!fresh || !fresh.playlistUrl || !fresh.eventsUrl || !fresh.sessionUrl) {
+      if (!fresh || !fresh.playlistUrl || !fresh.eventsUrl || !fresh.sessionUrl
+          || !fresh.batchUrl || !fresh.realtimeUrl) {
         throw new Error('invalid playback renewal');
       }
       cfg.playlistUrl = fresh.playlistUrl;
       cfg.eventsUrl = fresh.eventsUrl;
       cfg.sessionUrl = fresh.sessionUrl;
+      cfg.batchUrl = fresh.batchUrl;
+      cfg.realtimeUrl = fresh.realtimeUrl;
+      if (typeof cfg.onPlaybackRenewed === 'function') {
+        cfg.onPlaybackRenewed(fresh);
+      }
       return fresh;
     }).then(function(value) { pending = null; return value; }, function(error) {
       pending = null;

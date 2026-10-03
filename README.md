@@ -53,6 +53,10 @@ existing Moodle-generated links will stop validating.
   reason to change it. It must outlive the media signature used for recovery.
 - **In-app player (user ids)**: leave empty for all app users, or provide a
   comma-separated pilot list while testing a mobile rollout.
+- **Analytics V2 pilot (user ids)**: defaults to `2`. Those users run Legacy
+  and the experimental WSS/batched pipeline together; leave empty to disable
+  V2. The pilot writes batches to a separate DynamoDB prefix so the Legacy
+  aggregates remain comparable.
 
 ## How playback works
 
@@ -61,6 +65,11 @@ signed playlist. Moodle validates enrolment and the local token before proxy
 requests reach Impronta. Heartbeats and events are relayed server to server so
 the tenant API key stays out of the browser. The plugin declares the personal
 data sent to the external service through Moodle's Privacy API.
+
+For the V2 pilot, WSS carries presence diagnostics only and never writes
+DynamoDB. Analytics accumulate locally and flush on pause, ended, video change,
+five-minute checkpoint and pagehide/sendBeacon. A failed V2 request is isolated
+from playback and Legacy.
 
 ## Uninstallation
 

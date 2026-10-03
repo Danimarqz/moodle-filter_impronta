@@ -40,6 +40,25 @@ window.ImprontaPlayerExtras = function(cfg) {
   }
 
   function init(player) {
+    // V2 is isolated behind the server-side flag. Any exception in this
+    // experimental path is swallowed so Legacy playback and analytics remain
+    // untouched.
+    var analyticsV2 = null;
+    var realtimeV2 = null;
+    if (cfg.experimentalPlayerV2 && typeof ImprontaAnalyticsV2 === 'function') {
+      try { analyticsV2 = ImprontaAnalyticsV2(player, cfg); } catch (e) {}
+    }
+    if (cfg.experimentalPlayerV2 && typeof ImprontaRealtimeV2 === 'function') {
+      try { realtimeV2 = ImprontaRealtimeV2(player, cfg); } catch (e) {}
+    }
+    cfg.onPlaybackRenewed = function(fresh) {
+      if (analyticsV2 && typeof analyticsV2.setContext === 'function') {
+        analyticsV2.setContext({batchUrl: fresh.batchUrl, sessionId: ''});
+      }
+      if (realtimeV2 && typeof realtimeV2.setContext === 'function') {
+          realtimeV2.setContext({realtimeUrl: fresh.realtimeUrl, sessionId: ''});
+      }
+    };
     var positionKey = 'impronta:position:' + cfg.subject + ':' + cfg.videoPath;
     try {
       var saved = Number(localStorage.getItem(positionKey));
@@ -173,19 +192,65 @@ window.ImprontaPlayerExtras = function(cfg) {
         lotePendiente = {enviados: iniciales, batchId: nuevoBatchId()};
       }
       var lote = lotePendiente;
+      var heartbeatContext = cfg.sessionUrl;
       latidoEnVuelo = true;
       Promise.resolve().then(function() {
-        return fetch(cfg.sessionUrl, {
+        var heartbeatPayload = {
+          watchedSeconds: lote.enviados,
+          batchId: lote.batchId
+        };
+        if (cfg.experimentalPlayerV2) { heartbeatPayload.realtime = true; }
+        return fetch(heartbeatContext, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({watchedSeconds: lote.enviados, batchId: lote.batchId}),
+          body: JSON.stringify(heartbeatPayload),
           keepalive: true
         });
       }).then(function(res) {
         if (!res || !res.ok) { throw new Error('heartbeat failed'); }
         return typeof res.json === 'function' ? res.json() : {};
       }).then(function(r) {
+        // A playlist renewal may have replaced the signed context while this
+        // request was in flight. Its response belongs to the old session and
+        // must not overwrite the new V2/WSS context or block state.
+        if (heartbeatContext !== cfg.sessionUrl) {
+          // The old request either succeeded against the old lease or failed;
+          // never leave the Legacy state machine marked in-flight. If it
+          // failed, the old frozen lote must be recreated for the new lease.
+          lotePendiente = null;
+          vistos = Math.max(0, vistos - lote.enviados);
+          latidoEnVuelo = false;
+          if (flushPendiente) {
+            flushPendiente = false;
+            var staleDispose = disposePendiente;
+            disposePendiente = false;
+            latir(true, staleDispose);
+          } else {
+            programarLatido(siguienteLatido);
+          }
+          return;
+        }
         r = r || {};
+        if (r.sessionId) {
+          var nextSessionId = String(r.sessionId);
+          try {
+            if (realtimeV2 && typeof realtimeV2.setSession === 'function') {
+              realtimeV2.setSession(nextSessionId, r.realtime || null);
+            }
+          } catch (e) {}
+          cfg.sessionId = nextSessionId;
+          try {
+            if (analyticsV2 && typeof analyticsV2.setSession === 'function') {
+              analyticsV2.setSession(nextSessionId);
+            }
+            if (analyticsV2 && typeof analyticsV2.flush === 'function') {
+              analyticsV2.flush('checkpoint', false);
+            }
+          } catch (e) {}
+        }
+        if (r.realtime && realtimeV2 && typeof realtimeV2.setCredentials === 'function') {
+          try { realtimeV2.setCredentials(r.realtime); } catch (e) {}
+        }
         // Los segundos solo se descuentan si el latido llegó. Perderlos
         // inflaría la proporción de segmentos servidos por minuto visto y
         // acercaría una alerta a un alumno que no ha hecho nada raro.
@@ -206,6 +271,11 @@ window.ImprontaPlayerExtras = function(cfg) {
         }
       }).catch(function() {
         latidoEnVuelo = false;
+        if (heartbeatContext !== cfg.sessionUrl) {
+          // The old request did not confirm. Reissue the watched delta with a
+          // fresh batch id under the renewed signed context.
+          lotePendiente = null;
+        }
         // El lote sigue pendiente: el siguiente intento reenvía el mismo.
         if (flushPendiente) {
           flushPendiente = false;
@@ -389,6 +459,7 @@ window.ImprontaPlayerExtras = function(cfg) {
       label: cfg.watermarkLabel,
       tamperLimit: 3,
       onTamper: function(count, position) {
+        if (analyticsV2 && typeof analyticsV2.recordTamper === 'function') { analyticsV2.recordTamper(); }
         push('tamper', position);
         flush('tamper');
       }

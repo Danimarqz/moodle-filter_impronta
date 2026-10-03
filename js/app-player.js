@@ -162,7 +162,7 @@
   // El identificador de sesión no está aquí: lo guardó playlist.php en el
   // servidor. Este JS no puede latir por una sesión ajena porque no conoce
   // ninguna.
-  function sesion(player, cfg, el) {
+  function sesion(player, cfg, el, analyticsV2, realtimeV2) {
     if (!cfg.session) { return; }
 
     var vistos = 0;
@@ -214,12 +214,15 @@
     function latir(forzar) {
       if ((terminada && !(forzar && destruida && flushPendiente)) || !iniciada || latidoEnVuelo || (!forzar && player.paused())) { return; }
       var enviados = Math.round(vistos);
+      var heartbeatContext = cfg.session;
       flushPendiente = false;
       latidoEnVuelo = true;
-      fetch(cfg.session, {
+      var heartbeatPayload = {watchedSeconds: enviados};
+      if (cfg.experimentalPlayerV2) { heartbeatPayload.realtime = true; }
+      fetch(heartbeatContext, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({watchedSeconds: enviados}),
+        body: JSON.stringify(heartbeatPayload),
         keepalive: true
       }).then(function(res) {
         if (!res.ok) { throw new Error('heartbeat ' + res.status); }
@@ -229,6 +232,30 @@
         vistos -= enviados;
         return res.json();
       }).then(function(r) {
+        // Ignore a response belonging to a lease replaced while this request
+        // was in flight; otherwise an old session can overwrite the renewed
+        // V2/WSS context.
+        if (heartbeatContext !== cfg.session) { return; }
+        if (r && r.sessionId) {
+          var nextSessionId = String(r.sessionId);
+          try {
+            if (realtimeV2 && typeof realtimeV2.setSession === 'function') {
+              realtimeV2.setSession(nextSessionId, r.realtime || null);
+            }
+          } catch (e) {}
+          cfg.sessionId = nextSessionId;
+          try {
+            if (analyticsV2 && typeof analyticsV2.setSession === 'function') {
+              analyticsV2.setSession(nextSessionId);
+            }
+            if (analyticsV2 && typeof analyticsV2.flush === 'function') {
+              analyticsV2.flush('checkpoint', false);
+            }
+          } catch (e) {}
+        }
+        if (r.realtime && realtimeV2 && typeof realtimeV2.setCredentials === 'function') {
+          try { realtimeV2.setCredentials(r.realtime); } catch (e) {}
+        }
         var recibido = Number(r && r.heartbeatSeconds);
         intervalo = recibido > 0 ? recibido : 120;
         if (r.blocked) { parar(cfg.revoked); }
@@ -363,9 +390,15 @@
       events: el.getAttribute('data-impronta-events'),
       subject: el.getAttribute('data-impronta-subject'),
       path: el.getAttribute('data-impronta-path'),
+      videoId: el.getAttribute('data-impronta-path'),
+      videoPath: el.getAttribute('data-impronta-path'),
       watermark: el.getAttribute('data-impronta-watermark'),
       color: el.getAttribute('data-impronta-color'),
       session: el.getAttribute('data-impronta-session'),
+      experimentalPlayerV2: el.getAttribute('data-impronta-v2') === '1',
+      batchUrl: el.getAttribute('data-impronta-batch'),
+      realtimeUrl: el.getAttribute('data-impronta-realtime'),
+      checkpointInterval: 300000,
       revoked: el.getAttribute('data-impronta-revoked'),
       evicted: el.getAttribute('data-impronta-evicted'),
       expired: el.getAttribute('data-impronta-expired')
@@ -418,6 +451,8 @@
         'vtt.js': CFG.vttjs,
         sources: [{src: cfg.playlistUrl, type: 'application/x-mpegURL'}]
       });
+      var analyticsV2 = null;
+      var realtimeV2 = null;
 
       // Conserva el punto de reproducción al cerrar y volver a abrir la app.
       var positionKey = 'impronta:position:' + cfg.subject + ':' + cfg.path;
@@ -467,12 +502,28 @@
         var wm = ImprontaWatermark.attach(player, {
           label: cfg.watermark,
           tamperLimit: 3,
-          onTamper: function() {}
+          onTamper: function() {
+            if (analyticsV2 && typeof analyticsV2.recordTamper === 'function') { analyticsV2.recordTamper(); }
+          }
         });
         window.ImprontaWatermarkFit.attach(player, wm);
       }).then(function() {
+        if (cfg.experimentalPlayerV2 && typeof ImprontaAnalyticsV2 === 'function') {
+          try { analyticsV2 = ImprontaAnalyticsV2(player, cfg); } catch (e) {}
+        }
+        if (cfg.experimentalPlayerV2 && typeof ImprontaRealtimeV2 === 'function') {
+          try { realtimeV2 = ImprontaRealtimeV2(player, cfg); } catch (e) {}
+        }
+        cfg.onPlaybackRenewed = function(fresh) {
+          if (analyticsV2 && typeof analyticsV2.setContext === 'function') {
+            analyticsV2.setContext({batchUrl: fresh.batchUrl, sessionId: ''});
+          }
+          if (realtimeV2 && typeof realtimeV2.setContext === 'function') {
+            realtimeV2.setContext({realtimeUrl: fresh.realtimeUrl, sessionId: ''});
+          }
+        };
         analytics(player, cfg);
-        sesion(player, cfg, el);
+        sesion(player, cfg, el, analyticsV2, realtimeV2);
       }).catch(function() {
         // Sin watermark no se reproduce: identificar al alumno es el motivo
         // de que exista este reproductor.

@@ -401,7 +401,24 @@ class impronta_api {
             return;
         }
         $cache = \cache::make_from_params(\cache_store::MODE_APPLICATION, 'filter_impronta', 'sessions');
-        $cache->set($key, ['id' => $sessionid, 'at' => time()]);
+        $now = time();
+        $stored = $cache->get($key);
+        $ids = [];
+        if (is_array($stored)) {
+            if (!empty($stored['id']) && is_string($stored['id'])) {
+                $ids[] = $stored['id'];
+            }
+            if (!empty($stored['ids']) && is_array($stored['ids'])) {
+                foreach ($stored['ids'] as $oldid) {
+                    if (is_string($oldid) && $oldid !== '') {
+                        $ids[] = $oldid;
+                    }
+                }
+            }
+        }
+        array_unshift($ids, $sessionid);
+        $ids = array_values(array_slice(array_unique($ids), 0, 4));
+        $cache->set($key, ['id' => $sessionid, 'at' => $now, 'ids' => $ids]);
     }
 
     /**
@@ -428,6 +445,150 @@ class impronta_api {
     }
 
     /**
+     * Comprueba una sesión que el mismo token/plugin vio recientemente.
+     *
+     * Batch V2 conserva la sesión dentro del lote congelado. Si el vídeo se
+     * renueva antes de que llegue un retry, la sesión actual ya es otra; se
+     * aceptan las últimas sesiones del mismo contexto para que el batch no
+     * cambie de partición ni pueda inventarse una sesión ajena.
+     *
+     * @param string $path
+     * @param int $userid
+     * @param string $sessionid
+     * @param string $playbackid
+     * @return bool
+     */
+    public static function session_known(string $path, int $userid, string $sessionid, string $playbackid = ''): bool {
+        $key = self::session_key($path, $userid, $playbackid);
+        if ($key === '' || $sessionid === '') {
+            return false;
+        }
+        $cache = \cache::make_from_params(\cache_store::MODE_APPLICATION, 'filter_impronta', 'sessions');
+        $stored = $cache->get($key);
+        if (!is_array($stored) || time() - (int) ($stored['at'] ?? 0) > self::SESSION_MEMORY) {
+            return false;
+        }
+        $ids = [];
+        if (!empty($stored['id']) && is_string($stored['id'])) {
+            $ids[] = $stored['id'];
+        }
+        if (!empty($stored['ids']) && is_array($stored['ids'])) {
+            $ids = array_merge($ids, $stored['ids']);
+        }
+        return in_array($sessionid, $ids, true);
+    }
+
+    /**
+     * Guarda la partición elegida para un batch que llegó antes de que el
+     * cliente conociera el sessionId. Así un retry con el mismo batchId no
+     * cambia de sesión si Moodle ya abrió una reproducción nueva.
+     *
+     * @param string $path
+     * @param int $userid
+     * @param string $batchid
+     * @param string $sessionid
+     * @param string $playbackid
+     */
+    public static function remember_batch_session(
+        string $path,
+        int $userid,
+        string $batchid,
+        string $sessionid,
+        string $playbackid = ''
+    ): void {
+        $subject = self::subject($userid);
+        if ($subject === '' || $batchid === '' || $sessionid === '') {
+            return;
+        }
+        $key = 'batch-' . sha1($subject . '|' . $path . '|' . $playbackid . '|' . $batchid);
+        $cache = \cache::make_from_params(\cache_store::MODE_APPLICATION, 'filter_impronta', 'sessions');
+        $cache->set($key, ['id' => $sessionid, 'at' => time()]);
+    }
+
+    /**
+     * Recupera la partición fijada para un batch previo.
+     *
+     * @param string $path
+     * @param int $userid
+     * @param string $batchid
+     * @param string $playbackid
+     * @return string
+     */
+    public static function recall_batch_session(string $path, int $userid, string $batchid, string $playbackid = ''): string {
+        $subject = self::subject($userid);
+        if ($subject === '' || $batchid === '') {
+            return '';
+        }
+        $key = 'batch-' . sha1($subject . '|' . $path . '|' . $playbackid . '|' . $batchid);
+        $cache = \cache::make_from_params(\cache_store::MODE_APPLICATION, 'filter_impronta', 'sessions');
+        $stored = $cache->get($key);
+        if (!is_array($stored) || empty($stored['id']) || time() - (int) ($stored['at'] ?? 0) > self::SESSION_MEMORY) {
+            return '';
+        }
+        return (string) $stored['id'];
+    }
+
+    /**
+     * Elige una sola sesión para un batch, bajo un lock de Moodle. Dos
+     * reintentos concurrentes que lleguen mientras se renueva la playlist no
+     * pueden fijar el mismo batch a dos particiones DynamoDB distintas.
+     *
+     * @param string $path
+     * @param int $userid
+     * @param string $batchid
+     * @param string $requested
+     * @param string $playbackid
+     * @return string
+     */
+    public static function resolve_batch_session(
+        string $path,
+        int $userid,
+        string $batchid,
+        string $requested = '',
+        string $playbackid = ''
+    ): string {
+        $known = self::recall_batch_session($path, $userid, $batchid, $playbackid);
+        if ($known !== '') {
+            return $known;
+        }
+        $candidate = $requested !== ''
+            ? $requested
+            : self::recall_session($path, $userid, $playbackid);
+        if ($candidate === '') {
+            return '';
+        }
+        if (!self::session_known($path, $userid, $candidate, $playbackid)) {
+            return '';
+        }
+
+        $lockkey = 'batch-' . sha1(self::subject($userid) . '|' . $path . '|' . $playbackid . '|' . $batchid);
+        $lock = null;
+        try {
+            $factory = \core\lock\lock_config::get_lock_factory('filter_impronta_batch');
+            $lock = $factory->get_lock($lockkey, 5);
+        } catch (\Throwable $e) {
+            // Do not choose an unprotected partition: a temporary V2 loss is
+            // safer than writing one batch under two DynamoDB keys.
+            return '';
+        }
+        if ($lock === false) {
+            return '';
+        }
+        try {
+            $known = self::recall_batch_session($path, $userid, $batchid, $playbackid);
+            if ($known !== '') {
+                return $known;
+            }
+            self::remember_batch_session($path, $userid, $batchid, $candidate, $playbackid);
+            return $candidate;
+        } finally {
+            if ($lock !== null) {
+                $lock->release();
+            }
+        }
+    }
+
+    /**
      * Manda un latido de la sesión de reproducción y devuelve lo que conteste
      * Impronta: {evicted, blocked, heartbeatSeconds}.
      *
@@ -446,6 +607,7 @@ class impronta_api {
      *  cliente lo acuña una vez por latido y lo reutiliza al reintentar, para
      *  que la facturación de ese lote sea exactamente-una-vez. Sin él,
      *  at-least-once. Ver el README del backend.
+     * @param bool $realtime solicita credenciales WSS en la misma respuesta
      * @return array|null null si falla
      */
     public static function heartbeat(
@@ -454,7 +616,8 @@ class impronta_api {
         string $sessionid,
         int $watched,
         string $authorizationgroupid = '',
-        string $batchid = ''
+        string $batchid = '',
+        bool $realtime = false
     ): ?array {
         global $CFG;
 
@@ -485,6 +648,9 @@ class impronta_api {
         if ($batchid !== '') {
             $payload['batchId'] = $batchid;
         }
+        if ($realtime) {
+            $payload['realtime'] = true;
+        }
         $response = $curl->post(rtrim(self::URL, '/') . '/player/heartbeat', json_encode($payload), [
             // Corto a propósito: esto corre cada dos minutos por cada alumno
             // reproduciendo. Un Impronta lento no puede clavar un worker de
@@ -501,6 +667,89 @@ class impronta_api {
             return null;
         }
 
+        $decoded = json_decode((string) $response, true);
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    /**
+     * Persists one V2 analytics delta. The backend stores it separately from
+     * Legacy aggregates so the pilot can run both pipelines without double
+     * counting the existing dashboard data.
+     *
+     * @param array $batch
+     * @return bool
+     */
+    public static function analytics_batch(array $batch): bool {
+        global $CFG;
+        require_once($CFG->libdir . '/filelib.php');
+
+        $curl = new \curl();
+        $curl->setHeader([
+            'Authorization: Bearer ' . config::required('apikey'),
+            'Content-Type: application/json',
+            'Accept: application/json',
+        ]);
+        $response = $curl->post(rtrim(self::URL, '/') . '/analytics/batch', json_encode($batch), [
+            'CURLOPT_TIMEOUT' => 5,
+            'CURLOPT_CONNECTTIMEOUT' => 3,
+            'CURLOPT_FOLLOWLOCATION' => 0,
+        ]);
+        $info = $curl->get_info();
+        $httpcode = (int) ($info['http_code'] ?? 0);
+        if ($curl->get_errno() || $httpcode < 200 || $httpcode >= 300) {
+            debugging('filter_impronta: analytics batch failed (HTTP ' . $httpcode . ')', DEBUG_NORMAL);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Obtains a short-lived WSS token without exposing the tenant API key.
+     *
+     * @param string $path
+     * @param int $userid
+     * @param string $sessionid
+     * @param string $authorizationgroupid
+     * @return array|null
+     */
+    public static function realtime(
+        string $path,
+        int $userid,
+        string $sessionid,
+        string $authorizationgroupid = ''
+    ): ?array {
+        global $CFG;
+        require_once($CFG->libdir . '/filelib.php');
+        $subject = self::subject($userid);
+        if ($subject === '' || $sessionid === '') {
+            return null;
+        }
+        $payload = [
+            'classId' => $path,
+            'sessionId' => $sessionid,
+            'userId' => $subject,
+            'ip' => request::ip(),
+        ];
+        if ($authorizationgroupid !== '') {
+            $payload['authorizationGroupId'] = $authorizationgroupid;
+        }
+        $curl = new \curl();
+        $curl->setHeader([
+            'Authorization: Bearer ' . config::required('apikey'),
+            'Content-Type: application/json',
+            'Accept: application/json',
+        ]);
+        $response = $curl->post(rtrim(self::URL, '/') . '/player/realtime', json_encode($payload), [
+            'CURLOPT_TIMEOUT' => 5,
+            'CURLOPT_CONNECTTIMEOUT' => 3,
+            'CURLOPT_FOLLOWLOCATION' => 0,
+        ]);
+        $info = $curl->get_info();
+        $httpcode = (int) ($info['http_code'] ?? 0);
+        if ($curl->get_errno() || $httpcode < 200 || $httpcode >= 300) {
+            debugging('filter_impronta: realtime token failed (HTTP ' . $httpcode . ')', DEBUG_NORMAL);
+            return null;
+        }
         $decoded = json_decode((string) $response, true);
         return is_array($decoded) ? $decoded : null;
     }

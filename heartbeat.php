@@ -116,6 +116,7 @@ if ($sessionid === '') {
 $payload = json_decode((string) file_get_contents('php://input'), true);
 $watched = 0;
 $batchid = '';
+$realtime = false;
 if (is_array($payload)) {
     if (isset($payload['watchedSeconds']) && is_numeric($payload['watchedSeconds'])) {
         $watched = max(0, (int) $payload['watchedSeconds']);
@@ -134,9 +135,18 @@ if (is_array($payload)) {
         // apagaria la idempotencia en silencio y un reintento contaria doble.
         debugging('filter_impronta: batchId descartado por forma invalida', DEBUG_NORMAL);
     }
+    $realtime = !empty($payload['realtime']);
 }
 
-$respuesta = impronta_api::heartbeat($path, (int) $userid, $sessionid, $watched, $authorizationgroupid, $batchid);
+$respuesta = impronta_api::heartbeat(
+    $path,
+    (int) $userid,
+    $sessionid,
+    $watched,
+    $authorizationgroupid,
+    $batchid,
+    $realtime
+);
 if ($respuesta === null) {
     // Perder un latido no puede parar la reproducción: el siguiente lo arregla,
     // y si de verdad hay un bloqueo lo corta el propio segmento con un 403.
@@ -145,8 +155,21 @@ if ($respuesta === null) {
 
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
-echo json_encode([
+$output = [
+    'sessionId' => isset($respuesta['sessionId']) ? (string) $respuesta['sessionId'] : $sessionid,
     'evicted' => !empty($respuesta['evicted']),
     'blocked' => !empty($respuesta['blocked']),
     'heartbeatSeconds' => isset($respuesta['heartbeatSeconds']) ? (int) $respuesta['heartbeatSeconds'] : 120,
-]);
+];
+if (
+    isset($respuesta['realtime']) && is_array($respuesta['realtime'])
+    && !empty($respuesta['realtime']['url'])
+    && !empty($respuesta['realtime']['token'])
+) {
+    $output['realtime'] = [
+        'url' => (string) $respuesta['realtime']['url'],
+        'token' => (string) $respuesta['realtime']['token'],
+        'expiresAt' => (int) ($respuesta['realtime']['expiresAt'] ?? 0),
+    ];
+}
+echo json_encode($output);

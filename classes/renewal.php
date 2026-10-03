@@ -109,6 +109,28 @@ class renewal {
                 '',
                 $newplaybackid
             ),
+            'batchUrl' => token::endpoint_url(
+                'batch.php',
+                $path,
+                $newtoken,
+                $newexpires,
+                $courseid,
+                $userid,
+                [],
+                '',
+                $newplaybackid
+            ),
+            'realtimeUrl' => token::endpoint_url(
+                'realtime.php',
+                $path,
+                $newtoken,
+                $newexpires,
+                $courseid,
+                $userid,
+                [],
+                '',
+                $newplaybackid
+            ),
             'expiresAt' => $newexpires,
         ];
     }

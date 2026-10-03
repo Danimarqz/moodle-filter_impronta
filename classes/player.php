@@ -275,6 +275,8 @@ class player {
             $vjsjs = self::asset_url('vendor/video.js/video.min.js');
             $watermarkjs = self::asset_url('watermark.js');
             $fitjs = self::asset_url('js/watermark-fit.js');
+            $analyticsv2js = self::asset_url('js/analytics-v2.js');
+            $realtimev2js = self::asset_url('js/realtime-v2.js');
             $extrasjs = self::asset_url('js/player-extras.js');
             $renewjs = self::asset_url('js/playback-renew.js');
             $assets = <<<HTML
@@ -292,6 +294,8 @@ class player {
 <script src="{$vjsjs}"></script>
 <script src="{$watermarkjs}"></script>
 <script src="{$fitjs}"></script>
+<script src="{$analyticsv2js}"></script>
+<script src="{$realtimev2js}"></script>
 <script src="{$renewjs}"></script>
 <script src="{$extrasjs}"></script>
 HTML;
@@ -513,6 +517,31 @@ HTML;
                 $playbackid,
                 $mode
             ),
+            'v2' => !$isaudio && config::experimental_player_v2($tokenuserid) ? '1' : '0',
+            'batch' => $isaudio ? '' : token::endpoint_url(
+                'batch.php',
+                $filename,
+                $token,
+                $expires,
+                $courseid,
+                $tokenuserid,
+                [],
+                $authorizationgroupid,
+                $playbackid,
+                $mode
+            ),
+            'realtime' => $isaudio ? '' : token::endpoint_url(
+                'realtime.php',
+                $filename,
+                $token,
+                $expires,
+                $courseid,
+                $tokenuserid,
+                [],
+                $authorizationgroupid,
+                $playbackid,
+                $mode
+            ),
             'revoked' => get_string('accessrevoked', 'filter_impronta'),
             'evicted' => get_string('sessionevicted', 'filter_impronta'),
             'expired' => get_string('sessionexpired', 'filter_impronta'),
@@ -715,6 +744,32 @@ HTML;
                 $playbackid,
                 $mode
             ),
+            'experimentalPlayerV2' => config::experimental_player_v2($userid),
+            'batchUrl' => token::endpoint_url(
+                'batch.php',
+                $filename,
+                $token,
+                $expires,
+                $courseid,
+                $userid,
+                [],
+                $authorizationgroupid,
+                $playbackid,
+                $mode
+            ),
+            'realtimeUrl' => token::endpoint_url(
+                'realtime.php',
+                $filename,
+                $token,
+                $expires,
+                $courseid,
+                $userid,
+                [],
+                $authorizationgroupid,
+                $playbackid,
+                $mode
+            ),
+            'checkpointInterval' => 300000,
             'revokedText' => s(get_string('accessrevoked', 'filter_impronta')),
             'evictedText' => s(get_string('sessionevicted', 'filter_impronta')),
         ];
