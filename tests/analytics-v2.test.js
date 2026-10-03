@@ -109,6 +109,7 @@ test('flushes an incremental pause batch and clears it only after acknowledgemen
   assert.equal(batch.sequence, 1);
   assert.equal(batch.watchedDelta, 2);
   assert.equal(batch.pauseDelta, 1);
+  assert.equal(Object.hasOwn(batch, 'batchUrl'), false);
 
   h.player.emit('play');
   h.player.position = 3;

@@ -132,12 +132,23 @@
     }
 
     function requestOptions(batch) {
+      var payload = {};
+      Object.keys(batch).forEach(function(key) {
+        // batchUrl is transport metadata used by the client for retries. The
+        // destination URL already carries the signed context; duplicating it
+        // in the JSON body wastes bytes and exposes no additional analytics.
+        if (key !== 'batchUrl') { payload[key] = batch[key]; }
+      });
       return {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(batch),
+        body: JSON.stringify(payload),
         keepalive: true
       };
+    }
+
+    function requestBody(batch) {
+      return requestOptions(batch).body;
     }
 
     function sendFetchDirect(batch) {
@@ -187,7 +198,7 @@
         if (!batch.sessionId) { continue; }
         var accepted = false;
         try {
-          accepted = typeof beacon === 'function' && beacon(batch.batchUrl, JSON.stringify(batch));
+          accepted = typeof beacon === 'function' && beacon(batch.batchUrl, requestBody(batch));
         } catch (e) {}
         if (accepted) {
           acknowledge(batch);
