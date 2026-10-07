@@ -1,13 +1,29 @@
 <?php
 // This file is part of Moodle - https://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
 /* Copyright (C) 2026 DaniMarqz. GPL-3.0-or-later; see LICENSE. */
 /**
  * Relay for V2 analytics batches for all authorized learners.
  *
- * V2 is deliberately kept on its own backend route and storage prefix. The
- * Legacy /events and /player/heartbeat paths remain active and unchanged.
+ * V2 uses its own backend route and storage prefix. The Legacy /events and
+ * /player/heartbeat paths remain active only while the deprecation window is
+ * open; see the deprecation notes in README.md.
  *
  * @package filter_impronta
+ * @copyright 2026 DaniMarqz
+ * @license http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
 // phpcs:ignore moodle.Files.RequireLogin.Missing -- Signed token authorizes the endpoint.
@@ -28,6 +44,11 @@ $authorizationgroupid = optional_param('g', '', PARAM_ALPHANUMEXT);
 $playbackid = optional_param('p', '', PARAM_ALPHANUMEXT);
 $mode = optional_param('m', '', PARAM_ALPHA);
 
+/**
+ * Ends the request with a bare status code.
+ *
+ * @param int $status HTTP status to return.
+ */
 function impronta_batch_fail(int $status): void {
     http_response_code($status);
     header('Content-Type: text/plain; charset=utf-8');
@@ -40,17 +61,19 @@ if ($path === '' || strpos($path, '..') !== false || empty($signedtoken) || empt
 }
 
 $unused = false;
-if (token::authorize(
-    $path,
-    $signedtoken,
-    (int) $expires,
-    (int) $courseid,
-    (int) $userid,
-    $unused,
-    $authorizationgroupid,
-    $playbackid,
-    $mode
-) !== null) {
+if (
+    token::authorize(
+        $path,
+        $signedtoken,
+        (int) $expires,
+        (int) $courseid,
+        (int) $userid,
+        $unused,
+        $authorizationgroupid,
+        $playbackid,
+        $mode
+    ) !== null
+) {
     impronta_batch_fail(403);
 }
 
@@ -90,10 +113,12 @@ $reasons = ['pause', 'ended', 'video_change', 'checkpoint', 'pagehide'];
 $reason = isset($payload['reason']) && is_string($payload['reason']) ? $payload['reason'] : '';
 $sequence = isset($payload['sequence']) && is_numeric($payload['sequence']) ? (int) $payload['sequence'] : 0;
 $videoid = isset($payload['videoId']) && is_string($payload['videoId']) ? trim($payload['videoId']) : '';
-if (!in_array($reason, $reasons, true)
+if (
+    !in_array($reason, $reasons, true)
         || preg_match('/^[A-Za-z0-9._:-]{1,128}$/', $batchid) !== 1
         || $sequence < 1
-        || $videoid !== $path) {
+        || $videoid !== $path
+) {
     impronta_batch_fail(400);
 }
 

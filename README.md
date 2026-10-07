@@ -4,9 +4,13 @@ Impronta protects Moodle video playback with short-lived signed links,
 learner-specific watermarks and playback analytics. The plugin is a connector:
 the Impronta SaaS backend and media storage are not included in this package.
 
+- **Documentation**: https://impronta.video/docs/moodle
+- **Bug tracker and feature requests**: https://github.com/Danimarqz/moodle-filter_impronta/issues
+- **Source code**: https://github.com/Danimarqz/moodle-filter_impronta
+
 ## Requirements
 
-- Moodle 4.0 or later.
+- Moodle 4.5 (LTS), 5.1 or 5.2.
 - A Moodle administrator account with permission to configure filters.
 - An active Impronta subscription and tenant credentials.
 - Outbound HTTPS access from Moodle to `https://app.impronta.video`.
@@ -52,24 +56,28 @@ existing Moodle-generated links will stop validating.
 - **Internal token TTL**: keep the default unless Impronta support gives a
   reason to change it. It must outlive the media signature used for recovery.
 - **In-app player (user ids)**: leave empty for all app users, or provide a
-  comma-separated pilot list while testing a mobile rollout.
-- **Analytics V2 pilot (user ids)**: defaults to `2`. Those users run Legacy
-  and the experimental WSS/batched pipeline together; leave empty to disable
-  V2. The pilot writes batches to a separate DynamoDB prefix so the Legacy
-  aggregates remain comparable.
+  comma-separated list to restrict the in-app player while testing a mobile
+  rollout.
 
 ## How playback works
 
 The filter recognises Impronta video references and asks the backend for a
 signed playlist. Moodle validates enrolment and the local token before proxy
-requests reach Impronta. Heartbeats and events are relayed server to server so
+requests reach Impronta. Heartbeats and analytics are relayed server to server so
 the tenant API key stays out of the browser. The plugin declares the personal
 data sent to the external service through Moodle's Privacy API.
 
-For the V2 pilot, WSS carries presence diagnostics only and never writes
-DynamoDB. Analytics accumulate locally and flush on pause, ended, video change,
-five-minute checkpoint and pagehide/sendBeacon. A failed V2 request is isolated
-from playback and Legacy.
+Analytics run over a single batched pipeline. The player accumulates deltas
+locally (watched seconds, max/current position, seek, pause, buffering, tamper
+count) and flushes one batch per reason on pause, ended, video change, a
+five-minute checkpoint, and pagehide/sendBeacon. Batches carry a stable
+identifier so a retry after a lost acknowledgement is deduplicated instead of
+double-counted. A failed batch request is isolated from playback: it stays in
+the outbox and is retried, and the player never pauses because analytics failed.
+
+WSS carries presence diagnostics only and never writes the analytics store. It
+starts once the playback session identifier is known and stops on ended and on
+dispose; connection problems never affect playback.
 
 ## Uninstallation
 

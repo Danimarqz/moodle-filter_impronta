@@ -1,7 +1,29 @@
 <?php
 // This file is part of Moodle - https://moodle.org/
+//
+// Moodle is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moodle is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moodle.  If not, see <https://www.gnu.org/licenses/>.
 /* Copyright (C) 2026 DaniMarqz. GPL-3.0-or-later; see LICENSE. */
-/** Server-side relay for a short-lived WSS token. @package filter_impronta */
+/**
+ * Server-side relay for a short-lived WSS token.
+ *
+ * The tenant API key never leaves the Moodle server: the browser asks here for
+ * a scoped, expiring socket token and connects to Impronta with that alone.
+ *
+ * @package filter_impronta
+ * @copyright 2026 DaniMarqz
+ * @license http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
 
 // phpcs:ignore moodle.Files.RequireLogin.Missing -- Signed token authorizes the endpoint.
 require_once(__DIR__ . '/../../config.php');
@@ -21,6 +43,11 @@ $authorizationgroupid = optional_param('g', '', PARAM_ALPHANUMEXT);
 $playbackid = optional_param('p', '', PARAM_ALPHANUMEXT);
 $mode = optional_param('m', '', PARAM_ALPHA);
 
+/**
+ * Ends the request with a bare status code.
+ *
+ * @param int $status HTTP status to return.
+ */
 function impronta_realtime_fail(int $status): void {
     http_response_code($status);
     header('Content-Type: text/plain; charset=utf-8');
@@ -32,17 +59,19 @@ if ($path === '' || strpos($path, '..') !== false || empty($signedtoken) || empt
     impronta_realtime_fail(400);
 }
 $unused = false;
-if (token::authorize(
-    $path,
-    $signedtoken,
-    (int) $expires,
-    (int) $courseid,
-    (int) $userid,
-    $unused,
-    $authorizationgroupid,
-    $playbackid,
-    $mode
-) !== null) {
+if (
+    token::authorize(
+        $path,
+        $signedtoken,
+        (int) $expires,
+        (int) $courseid,
+        (int) $userid,
+        $unused,
+        $authorizationgroupid,
+        $playbackid,
+        $mode
+    ) !== null
+) {
     impronta_realtime_fail(403);
 }
 

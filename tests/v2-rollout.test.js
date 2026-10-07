@@ -2,8 +2,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {readFileSync} = require('node:fs');
 const {join} = require('node:path');
-const {execFileSync} = require('node:child_process');
+const {execFileSync, spawnSync} = require('node:child_process');
 const root = join(__dirname, '..');
+
+// The upgrade step is pure PHP. A JavaScript-only CI runner has no php binary;
+// skip instead of failing so the JS suite stays meaningful there. The PHP job
+// (and any developer machine with php) runs it for real.
+const hasPhp = spawnSync('php', ['-v'], {encoding: 'utf8'}).status === 0;
 
 test('server render and authenticated relays no longer restrict V2 by learner id', () => {
   for (const name of ['classes/config.php', 'classes/player.php', 'settings.php', 'batch.php', 'realtime.php']) {
@@ -15,7 +20,7 @@ test('server render and authenticated relays no longer restrict V2 by learner id
   }
 });
 
-test('upgrade removes the obsolete setting and is repeatable', () => {
+test('upgrade removes the obsolete setting and is repeatable', {skip: !hasPhp}, () => {
   const upgrade = join(root, 'db/upgrade.php');
   const result = execFileSync('php', ['-r', `
     $removed = []; $saved = [];

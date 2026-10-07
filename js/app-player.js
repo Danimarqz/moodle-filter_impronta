@@ -103,57 +103,11 @@
     document.head.appendChild(style);
   }
 
-  function analytics(player, cfg) {
-    if (!cfg.events || !cfg.subject) { return; }
-    var queue = [];
-    var timer = null;
-    var heartbeats = 0;
-
-    function push(type) {
-      var pos = 0;
-      try { pos = player.currentTime() || 0; } catch (e) { pos = 0; }
-      queue.push({
-        videoPath: cfg.path,
-        type: type,
-        positionSeconds: Math.round(pos),
-        ts: Date.now()
-      });
-    }
-
-    function flush(reason) {
-      if (!queue.length) { return; }
-      var batch = queue;
-      queue = [];
-      heartbeats = 0;
-      // events.php reenvía a Impronta server-side con el apikey del tenant: la
-      // clave no baja nunca al dispositivo.
-      fetch(cfg.events, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({subject: cfg.subject, flushReason: reason, events: batch}),
-        keepalive: true
-      }).catch(function() {});
-    }
-
-    player.on('play', function() { push('play'); });
-    player.on('pause', function() { push('pause'); flush('pause'); });
-    player.on('seeked', function() { push('seek'); });
-    player.on('ended', function() { push('complete'); flush('complete'); });
-    timer = setInterval(function() {
-      if (!player.paused()) {
-        push('heartbeat');
-        heartbeats += 1;
-        if (heartbeats >= 6) { flush('interval'); }
-      }
-    }, 30000);
-    function onPageHide() { flush('pagehide'); }
-    window.addEventListener('pagehide', onPageHide);
-    player.on('dispose', function() {
-      if (timer) { clearInterval(timer); }
-      flush('dispose');
-      window.removeEventListener('pagehide', onPageHide);
-    });
-  }
+  // The app used to run its own Legacy beacon here (one event per 30 s POSTed
+  // to events.php). Analytics V2 is now the only pipeline, so the app relies on
+  // ImprontaAnalyticsV2 exactly like the browser player; see montar() below.
+  // events.php and the /events backend route survive one deprecation window for
+  // cached app bundles that still post to them.
 
   // Latido de la sesión de reproducción. Ver heartbeat.php: mantiene la sesión
   // viva, reporta cuánto vídeo se ha visto -el denominador de la detección de
@@ -386,7 +340,6 @@
       // El logo por si el poster 404ea (clase pendiente del scan). Con el
       // mismo valor que poster no hace falta sondear nada.
       posterfallback: el.getAttribute('data-impronta-posterfallback'),
-      events: el.getAttribute('data-impronta-events'),
       subject: el.getAttribute('data-impronta-subject'),
       path: el.getAttribute('data-impronta-path'),
       videoId: el.getAttribute('data-impronta-path'),
@@ -419,7 +372,6 @@
         var renew = window.ImprontaPlaybackRenew(cfg, CFG.renew);
         cfg.renew = function() { return renew().then(function() {
           cfg.playlist = cfg.playlistUrl;
-          cfg.events = cfg.eventsUrl;
           cfg.session = cfg.sessionUrl;
         }); };
       }
@@ -520,7 +472,6 @@
             realtimeV2.setContext({realtimeUrl: fresh.realtimeUrl, sessionId: ''});
           }
         };
-        analytics(player, cfg);
         sesion(player, cfg, el, analyticsV2, realtimeV2);
       }).catch(function() {
         // Sin watermark no se reproduce: identificar al alumno es el motivo
