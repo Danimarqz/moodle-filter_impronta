@@ -102,8 +102,13 @@ version desplegada en produccion.
   soportados. Verificado con el curso 157, sección 6, en navegador y en el
   contenedor de Moodle App; el reproductor, watermark y renovación cargan.
 - [x] Mantener verdes las pruebas PHP y JavaScript existentes.
-  PHPUnit en Moodle 5.0.10: 16 tests, 57 assertions, 0 fallos; el runner
-  reporta 2 deprecaciones externas al plugin.
+  **Reverificado el 2026-10-07** en Moodle **4.5.15** (LTS) con PostgreSQL 17.11
+  y PHP 8.2.34, instalando el plugin desde el arbol de trabajo:
+  `OK (16 tests, 57 assertions)` con `--fail-on-warning --fail-on-risky`.
+  JavaScript: `node --test tests/*.test.js` -> 46 tests, 45 pasan, 1 se salta
+  (el que ejecuta `upgrade.php` requiere PHP en el runner). phpcs con el
+  estandar Moodle sobre los 32 ficheros PHP: 0 errores.
+  Reproductor: `moodle-check/README.md` documenta el procedimiento exacto.
 - [x] Hacer una instalacion de prueba con el mismo ZIP exacto que se enviara al
   Marketplace.
 
