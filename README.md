@@ -67,17 +67,29 @@ requests reach Impronta. Heartbeats and analytics are relayed server to server s
 the tenant API key stays out of the browser. The plugin declares the personal
 data sent to the external service through Moodle's Privacy API.
 
-Analytics run over a single batched pipeline. The player accumulates deltas
-locally (watched seconds, max/current position, seek, pause, buffering, tamper
-count) and flushes one batch per reason on pause, ended, video change, a
-five-minute checkpoint, and pagehide/sendBeacon. Batches carry a stable
-identifier so a retry after a lost acknowledgement is deduplicated instead of
-double-counted. A failed batch request is isolated from playback: it stays in
-the outbox and is retried, and the player never pauses because analytics failed.
+Analytics use two pipelines during the current rollout:
 
-WSS carries presence diagnostics only and never writes the analytics store. It
-starts once the playback session identifier is known and stops on ended and on
-dispose; connection problems never affect playback.
+- **Legacy (deployed in production).** The player keeps a queue and POSTs it to
+  `events.php`, which relays server to server. Six 15-second heartbeats are
+  folded into one 90-second interval POST; `pause`, `ended`, hidden tab,
+  `pagehide`, `dispose` and `tamper` force an immediate send with their reason.
+  The last accepted event of a batch carries `playbackId`, `sessionId` and
+  `flushReason`, which is how the backend correlates a flush with a playback.
+- **V2 (batched pipeline, under validation).** Deltas accumulate locally and
+  flush to `batch.php` per reason, with a stable batch identifier so a retry
+  after a lost acknowledgement is deduplicated instead of double-counted. V2
+  writes to a separate storage prefix so the Legacy aggregates stay comparable.
+
+`WSS` presence diagnostics belong to V2. They never write the analytics store,
+and connection problems never affect playback.
+
+**Do not enable V2 in production until the backend exposes its routes.**
+`batch.php` and `realtime.php` currently return an error from the Impronta
+backend: the deployed API exposes neither a batched analytics route nor a
+WebSocket endpoint. Publishing the in-app and browser players against V2 while
+those routes are missing means losing the analytics rather than recording them.
+Verify with Impronta support that the routes are live for your tenant before
+rolling V2 out.
 
 ## Uninstallation
 

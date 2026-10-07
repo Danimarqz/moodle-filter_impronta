@@ -27,12 +27,29 @@ version desplegada en produccion.
 > **Bloqueante nuevo, descubierto el 2026-10-07:** el backend Go de Impronta **no
 > implementa** `POST /analytics/batch` ni ningun endpoint WSS. El plugin los
 > llama desde `classes/impronta_api.php::analytics_batch()` y desde
-> `realtime.php`, asi que hoy la analitica V2 responde 502 y el canal WSS nunca
-> conecta. El template (`backend/infra/template.yaml`) declara 86 rutas y
+> `realtime.php`, asi que hoy la analitica V2 responde error y el canal WSS nunca
+> conecta. El template (`backend/infra/template.yaml`) declara sus rutas y
 > ninguna es `/analytics/*`; no existe `AnalyticsFunction` ni nada equivalente a
-> `WebSocket`/`apigatewayv2` websocket en el codigo Go. **Esto hay que
-> implementarlo en el backend antes de enviar el plugin**, o los revisores no
-> veran ninguna analitica.
+> `WebSocket`/`apigatewayv2` websocket en el codigo Go.
+>
+> **Matiz importante, para no confundir dos cosas distintas:**
+>
+> - El **batching Legacy SI existe y esta desplegado** en produccion desde el
+>   2026-09-04: `POST /events` ingiere lotes de eventos y pliega heartbeats (ver
+>   `docs/plan-analytics-flush-phase1.md` e `informe-analytics-flush-fase1.html`).
+>   Ese es el pipeline que corre hoy, y el codigo del plugin que lo alimenta
+>   (`flush(reason)`, 6 latidos de 15 s en un POST de 90 s) **debe conservarse**.
+> - La **Fase 2** (`plan-analytics-compact-phase2.md`) es la que introduce
+>   `/analytics/batch`. Esta "implementado y validado localmente en `development`
+>   el 2026-09-09. No se ha desplegado a produccion." **La rama `development` no
+>   existe en el remoto de GitHub**: solo esta en la maquina local de Dani.
+>
+> Por tanto el trabajo pendiente no es "implementar batching desde cero", sino
+> **desplegar la Fase 2 y el endpoint WSS del backend**, o **retirar V2 del
+> plugin** hasta que existan. Hoy `player.php` emite `batchUrl` y `realtimeUrl` a
+> todo el mundo (el gate `experimentalusers` lo borro el upgrade `2026100304`),
+> asi que publicar asi supone perder la analitica que produce el pipeline
+> desplegado.
 
 ## Bloqueantes
 

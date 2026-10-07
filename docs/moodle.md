@@ -82,20 +82,33 @@ cannot reach `app.impronta.video`.
 
 ### Analytics
 
-Analytics use a single batched pipeline:
+Analytics run over two pipelines during the current rollout.
 
-- The player accumulates deltas locally — watched seconds, maximum and current
-  position, seek count, pause count, buffering time, tamper count.
-- One batch is flushed per reason: `pause`, `ended`, `video_change`,
-  `checkpoint` (five minutes), and `pagehide` via `sendBeacon`.
-- Each batch carries a stable identifier, so a retry after a lost
-  acknowledgement is deduplicated instead of double-counted.
-- A failed batch stays in the outbox and is retried. **Playback never pauses
-  because analytics failed.**
+**Legacy, deployed in production.** The player queues events and POSTs them to
+`events.php`, which relays them server to server. Six 15-second heartbeats are
+folded into one 90-second interval POST; `pause`, `ended`, a hidden tab,
+`pagehide`, `dispose` and `tamper` force an immediate send with their reason.
+The last accepted event of a batch carries the playback and session identifier
+plus the flush reason, which is how a flush is correlated with a playback. This
+pipeline records the numbers your dashboard shows today.
+
+**V2, batched, under validation.** Deltas accumulate locally — watched seconds,
+maximum and current position, seek count, pause count, buffering time, tamper
+count — and flush one batch per reason: `pause`, `ended`, `video_change`,
+`checkpoint` (five minutes) and `pagehide` via `sendBeacon`. Each batch carries a
+stable identifier, so a retry after a lost acknowledgement is deduplicated
+instead of double-counted. A failed batch stays in the outbox and is retried;
+playback never pauses because analytics failed. V2 writes to a separate storage
+prefix so the Legacy aggregates stay comparable.
 
 WSS is used for presence diagnostics only and never writes the analytics store.
 It starts once the playback session identifier is known and stops on `ended` and
 on dispose. Connection problems never affect playback.
+
+> **Before relying on V2**, confirm with Impronta support that your tenant has
+> the batched analytics route and the WebSocket endpoint enabled. Until the
+> backend exposes them, V2 requests fail and only the Legacy pipeline records
+> playback.
 
 ### The watermark
 

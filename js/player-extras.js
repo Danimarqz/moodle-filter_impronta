@@ -75,12 +75,48 @@ window.ImprontaPlayerExtras = function(cfg) {
         return fetch(cfg.renewUrl, {method: 'POST', body: form, credentials: 'same-origin'})
           .then(function(res) { if (!res.ok) { throw new Error('renew ' + res.status); } return res.json(); });
       });
-    // Analytics V2 (js/analytics-v2.js) is the only analytics pipeline: it
-    // batches deltas and flushes them through batch.php on pause, ended, video
-    // change, checkpoint and pagehide. The former Legacy beacon that POSTed one
-    // event per heartbeat to events.php was removed; events.php and the
-    // /events backend route are kept for one deprecation window so a cached
-    // player page from before this release keeps reporting.
+    var queue = [];
+    var analyticsHeartbeats = 0;
+    var analyticsHeartbeatSeconds = cfg.heartbeatSeconds || 15;
+    var analyticsHeartbeatsPerFlush = Math.max(1, Math.ceil(180 / analyticsHeartbeatSeconds));
+    var flushReasons = {
+      interval: true, pause: true, complete: true,
+      pagehide: true, dispose: true, tamper: true
+    };
+
+    function push(type, pos) {
+      queue.push({videoPath: cfg.videoPath, type: type, positionSeconds: Math.round(pos), ts: Date.now()});
+    }
+
+    function flush(reason) {
+      if (queue.length === 0 || !cfg.eventsUrl) { return; }
+      if (!flushReasons[reason]) { reason = 'interval'; }
+      var batch = queue;
+      queue = [];
+      analyticsHeartbeats = 0;
+      try {
+        fetch(cfg.eventsUrl, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({subject: cfg.subject, flushReason: reason, events: batch}),
+          keepalive: true
+        }).catch(function() {});
+      } catch (e) {}
+    }
+
+    player.on('play', function() { push('play', player.currentTime() || 0); });
+    player.on('pause', function() { push('pause', player.currentTime() || 0); flush('pause'); });
+    player.on('seeked', function() { push('seek', player.currentTime() || 0); });
+    player.on('ended', function() { push('complete', player.currentTime() || 0); flush('complete'); });
+
+    var heartbeat = setInterval(function() {
+      if (!player.paused()) {
+        push('heartbeat', player.currentTime() || 0);
+        analyticsHeartbeats += 1;
+        // Conserva la resolución de 15 s, pero agrupa 3 min en cada POST.
+        if (analyticsHeartbeats >= analyticsHeartbeatsPerFlush) { flush('interval'); }
+      }
+    }, analyticsHeartbeatSeconds * 1000);
 
     // --- Latido de la sesión de reproducción ------------------------------
     // Distinto del beacon de arriba, que es analítica. Este mantiene viva la
@@ -272,6 +308,7 @@ window.ImprontaPlayerExtras = function(cfg) {
     }
 
     player.on('dispose', function() {
+      clearInterval(heartbeat);
       clearInterval(relojAtasco);
       sesionReproduciendo = false;
       if (latidoTimer) { clearTimeout(latidoTimer); latidoTimer = null; }
@@ -280,6 +317,7 @@ window.ImprontaPlayerExtras = function(cfg) {
       flushSesion();
       sesionTerminada = true;
       if (!habiaLatidoEnVuelo) { disposePendiente = false; }
+      flush('dispose');
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pagehide', onPageHide);
     });
@@ -294,6 +332,7 @@ window.ImprontaPlayerExtras = function(cfg) {
     document.addEventListener('visibilitychange', onVisibilityChange);
 
     function onPageHide() {
+      flush('pagehide');
       flushSesion();
     }
     window.addEventListener('pagehide', onPageHide);
@@ -418,9 +457,9 @@ window.ImprontaPlayerExtras = function(cfg) {
       label: cfg.watermarkLabel,
       tamperLimit: 3,
       onTamper: function(count, position) {
-        // Tamper is a V2 delta, not a standalone event: it is counted here and
-        // flushed with the next batch (pause/ended/checkpoint/pagehide).
         if (analyticsV2 && typeof analyticsV2.recordTamper === 'function') { analyticsV2.recordTamper(); }
+        push('tamper', position);
+        flush('tamper');
       }
     });
 

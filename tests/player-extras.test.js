@@ -174,6 +174,69 @@ test('sends the first session heartbeat 30 seconds after play', async () => {
   assert.equal(sessionRequests[0].options.keepalive, true);
 });
 
+test('batches 15-second analytics heartbeats for three minutes', async () => {
+  const h = harness();
+  h.player.emit('play');
+  await h.advance(179999);
+  assert.equal(h.requests.filter((request) => request.url === '/events').length, 0);
+
+  await h.advance(1);
+  const eventRequests = h.requests.filter((request) => request.url === '/events');
+  assert.equal(eventRequests.length, 1);
+  assert.equal(eventRequests[0].options.keepalive, true);
+  const batch = JSON.parse(eventRequests[0].options.body);
+  assert.equal(batch.flushReason, 'interval');
+  assert.equal(batch.events.filter((event) => event.type === 'heartbeat').length, 12);
+  assert.equal(batch.events[0].type, 'play');
+});
+
+test('flushes the pending analytics batch when the player is disposed', async () => {
+  const h = harness();
+  h.player.emit('play');
+  await h.advance(30000);
+  h.player.emit('dispose');
+
+  const eventRequests = h.requests.filter((request) => request.url === '/events');
+  assert.equal(eventRequests.length, 1);
+  assert.deepEqual(
+    JSON.parse(eventRequests[0].options.body).events.map((event) => event.type),
+    ['play', 'heartbeat', 'heartbeat'],
+  );
+  assert.equal(JSON.parse(eventRequests[0].options.body).flushReason, 'dispose');
+  assert.equal(h.windowListeners.pagehide, undefined);
+});
+
+test('flushes the pending analytics batch on pagehide', async () => {
+  const h = harness();
+  h.player.emit('play');
+  await h.advance(30000);
+  h.windowListeners.pagehide();
+
+  const eventRequests = h.requests.filter((request) => request.url === '/events');
+  assert.equal(eventRequests.length, 1);
+  assert.deepEqual(
+    JSON.parse(eventRequests[0].options.body).events.map((event) => event.type),
+    ['play', 'heartbeat', 'heartbeat'],
+  );
+  assert.equal(JSON.parse(eventRequests[0].options.body).flushReason, 'pagehide');
+  h.windowListeners.pagehide();
+  assert.equal(h.requests.filter((request) => request.url === '/events').length, 1);
+});
+
+test('labels pause and complete analytics flushes', async () => {
+  const h = harness();
+  h.player.emit('play');
+  await h.advance(15000);
+  h.player.emit('pause');
+  h.player.emit('play');
+  h.player.emit('ended');
+
+  const reasons = h.requests
+    .filter((request) => request.url === '/events')
+    .map((request) => JSON.parse(request.options.body).flushReason);
+  assert.deepEqual(reasons, ['pause', 'complete']);
+});
+
 test('uses the server heartbeat interval and falls back to 120 seconds', async () => {
   const h = harness(() => Promise.resolve({ok: true, json: () => Promise.resolve({heartbeatSeconds: 75})}));
   h.player.emit('play');

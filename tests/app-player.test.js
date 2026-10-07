@@ -189,3 +189,22 @@ test('flushes seconds added while a heartbeat is in flight', async () => {
   assert.deepEqual(JSON.parse(sessions[1].options.body), {watchedSeconds: 8});
 });
 
+test('batches analytics for three minutes and flushes terminal events', async () => {
+  const h = harness(Promise.resolve({ok: true, json: () => Promise.resolve({heartbeatSeconds: 60})}));
+  await h.settle();
+  h.player.emit('play');
+  await h.advance(179999);
+  assert.equal(h.requests.filter((request) => request.url === '/events').length, 0);
+  await h.advance(1);
+
+  let events = h.requests.filter((request) => request.url === '/events');
+  assert.equal(events.length, 1);
+  assert.equal(JSON.parse(events[0].options.body).flushReason, 'interval');
+  assert.equal(JSON.parse(events[0].options.body).events.filter((event) => event.type === 'heartbeat').length, 6);
+
+  h.player.emit('pause');
+  h.player.emit('play');
+  h.windowListeners.pagehide();
+  events = h.requests.filter((request) => request.url === '/events');
+  assert.deepEqual(events.slice(1).map((request) => JSON.parse(request.options.body).flushReason), ['pause', 'pagehide']);
+});
