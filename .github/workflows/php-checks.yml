@@ -97,6 +97,7 @@ jobs:
 
       - name: Configure the test site
         run: |
+          mkdir -p /tmp/moodledata && chmod 0777 /tmp/moodledata
           if [ "${{ matrix.database }}" = "pgsql" ]; then
             export DBTYPE=pgsql DBHOST=127.0.0.1 DBNAME=moodle DBUSER=moodle DBPASS=moodle
           else
@@ -108,13 +109,22 @@ jobs:
             --dbuser="$DBUSER" --dbpass="$DBPASS" \
             --fullname=CI --shortname=CI --adminpass=Admin123! \
             --non-interactive --agree-license
-          echo "DEBUG=32767" >> /tmp/moodle/config.php
-          echo "\$CFG->debugdisplay = 1;" >> /tmp/moodle/config.php
+          # PHPUnit needs its own dataroot and table prefix in config.php.
+          # Without phpunit_dataroot the runner aborts with "Missing
+          # $CFG->phpunit_dataroot in config.php, can not run tests!" before
+          # running a single test.
+          mkdir -p /tmp/moodledata_phpunit && chmod 0777 /tmp/moodledata_phpunit
+          {
+            echo "\$CFG->phpunit_prefix = 'phpu_';"
+            echo "\$CFG->phpunit_dataroot = '/tmp/moodledata_phpunit';"
+            echo "\$CFG->debug = 32767;"
+            echo "\$CFG->debugdisplay = 1;"
+          } >> /tmp/moodle/config.php
 
       - name: Run the plugin PHPUnit suite
         run: |
           cd /tmp/moodle
-          # init.php installs the test site and then rebuilds phpunit.xml from
+          # init.php sets up the phpunit_* tables and rebuilds phpunit.xml from
           # phpunit.xml.dist, which is what registers the <component>_testsuite
           # entry for an installed plugin.
           php admin/tool/phpunit/cli/init.php

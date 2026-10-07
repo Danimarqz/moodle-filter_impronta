@@ -27,10 +27,12 @@ defined('MOODLE_INTERNAL') || die();
 // versión igual, el webview de la app sigue sirviendo el JS viejo de su caché.
 $plugin->version   = 2026100700;   // YYYYMMDDXX.
 $plugin->requires  = 2022041900;   // Moodle 4.0+.
-// The versions this release is tested and supported on. 4.5 is the current LTS;
-// 5.1 and 5.2 are the maintained stables. Widen only after running the test
-// suite against the additional branch.
-$plugin->supported = [405, 501, 502];
+// Least and greatest Moodle branch this release is tested and supported on.
+// Moodle validates this as a two-element RANGE (min <= max), not a list of
+// versions: anything else aborts plugin installation with "Incorrect syntax in
+// plugin supported declaration". 4.5 is the LTS; 5.2 the newest stable. Narrow
+// the range rather than listing versions.
+$plugin->supported = [405, 502];
 $plugin->component = 'filter_impronta';
 $plugin->maturity  = MATURITY_STABLE;
 $plugin->release   = '1.0.0';
