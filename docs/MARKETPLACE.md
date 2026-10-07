@@ -114,6 +114,13 @@ version desplegada en produccion.
   Reproductor: `moodle-check/README.md` documenta el procedimiento exacto.
 - [x] Hacer una instalacion de prueba con el mismo ZIP exacto que se enviara al
   Marketplace.
+  **Hecho el 2026-10-07.** `scripts/package-plugin.sh` genera
+  `build/filter_impronta.zip` (57 entradas, carpeta `impronta/` en la raiz, solo
+  `lang/en`); se descomprime en `filter/` de un Moodle 4.5.15 y se instala sin
+  errores. Los tests se anaden despues de instalar desde el arbol de trabajo
+  (el ZIP no los lleva a proposito) y la suite pasa: `OK (16 tests, 57
+  assertions)`. El ZIP no contiene `.github`, `docs/`, `tests/`, `scripts/` ni
+  `MARKETPLACE.md`.
 
 ## Paquete publico
 
