@@ -105,10 +105,10 @@ WSS is used for presence diagnostics only and never writes the analytics store.
 It starts once the playback session identifier is known and stops on `ended` and
 on dispose. Connection problems never affect playback.
 
-> **Before relying on V2**, confirm with Impronta support that your tenant has
-> the batched analytics route and the WebSocket endpoint enabled. Until the
-> backend exposes them, V2 requests fail and only the Legacy pipeline records
-> playback.
+> **V2 depends on the Impronta backend.** Both routes are live in production
+> today: `/analytics/batch` and `/player/realtime` answer `401` without
+> credentials rather than `404`. If Impronta ever withdraws them, V2 requests
+> fail and only the Legacy pipeline records playback.
 
 ### The watermark
 

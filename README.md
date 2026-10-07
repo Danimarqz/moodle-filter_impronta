@@ -83,13 +83,9 @@ Analytics use two pipelines during the current rollout:
 `WSS` presence diagnostics belong to V2. They never write the analytics store,
 and connection problems never affect playback.
 
-**Do not enable V2 in production until the backend exposes its routes.**
-`batch.php` and `realtime.php` currently return an error from the Impronta
-backend: the deployed API exposes neither a batched analytics route nor a
-WebSocket endpoint. Publishing the in-app and browser players against V2 while
-those routes are missing means losing the analytics rather than recording them.
-Verify with Impronta support that the routes are live for your tenant before
-rolling V2 out.
+V2 is served by the Impronta backend. Both routes behind it are live in
+production: posting to `/analytics/batch` and `/player/realtime` without
+credentials returns `401`, not `404`, while an unknown route returns `404`.
 
 ## Uninstallation
 

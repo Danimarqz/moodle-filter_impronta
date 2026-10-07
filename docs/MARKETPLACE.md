@@ -24,32 +24,35 @@ version desplegada en produccion.
 > en las *Moodle Marketplace Plugin Submission Guidelines*. Verificar antes de
 > enviar.
 >
-> **Bloqueante nuevo, descubierto el 2026-10-07:** el backend Go de Impronta **no
-> implementa** `POST /analytics/batch` ni ningun endpoint WSS. El plugin los
-> llama desde `classes/impronta_api.php::analytics_batch()` y desde
-> `realtime.php`, asi que hoy la analitica V2 responde error y el canal WSS nunca
-> conecta. El template (`backend/infra/template.yaml`) declara sus rutas y
-> ninguna es `/analytics/*`; no existe `AnalyticsFunction` ni nada equivalente a
-> `WebSocket`/`apigatewayv2` websocket en el codigo Go.
+> **CORREGIDO el mismo dia.** El bloqueante de abajo era **falso salvo en un
+> punto**: las rutas **SI estan desplegadas en produccion aunque no se hayan
+> pusheado al repo**. Comprobado en vivo contra `app.impronta.video/api`:
 >
-> **Matiz importante, para no confundir dos cosas distintas:**
+> | Peticion | Respuesta | Lectura |
+> | --- | --- | --- |
+> | `POST /analytics/batch` | **401** `invalid or missing Authorization header` | La ruta EXISTE y solo pide credenciales |
+> | `POST /player/realtime` | **401** `missing or malformed Authorization header` | La ruta EXISTE |
+> | `POST /player/playlist` (control, existe) | 401 | mismo patron |
+> | `POST /no-existe-xyz` (control, no existe) | **404** | asi se ve una ruta ausente |
 >
-> - El **batching Legacy SI existe y esta desplegado** en produccion desde el
->   2026-09-04: `POST /events` ingiere lotes de eventos y pliega heartbeats (ver
->   `docs/plan-analytics-flush-phase1.md` e `informe-analytics-flush-fase1.html`).
->   Ese es el pipeline que corre hoy, y el codigo del plugin que lo alimenta
->   (`flush(reason)`, 6 latidos de 15 s en un POST de 90 s) **debe conservarse**.
-> - La **Fase 2** (`plan-analytics-compact-phase2.md`) es la que introduce
->   `/analytics/batch`. Esta "implementado y validado localmente en `development`
->   el 2026-09-09. No se ha desplegado a produccion." **La rama `development` no
->   existe en el remoto de GitHub**: solo esta en la maquina local de Dani.
+> El 401 frente al 404 es la prueba: API Gateway devuelve 404 cuando no hay ruta
+> declarada, y 401 cuando la ruta existe y el autorizador rechaza. Las funciones
+> `analytics` y `realtime` estan desplegadas fuera del repo.
 >
-> Por tanto el trabajo pendiente no es "implementar batching desde cero", sino
-> **desplegar la Fase 2 y el endpoint WSS del backend**, o **retirar V2 del
-> plugin** hasta que existan. Hoy `player.php` emite `batchUrl` y `realtimeUrl` a
-> todo el mundo (el gate `experimentalusers` lo borro el upgrade `2026100304`),
-> asi que publicar asi supone perder la analitica que produce el pipeline
-> desplegado.
+> **Lo unico que sigue sin verificar es el endpoint WSS propiamente dicho.**
+> `POST /player/realtime` devuelve el token de socket, pero el handshake
+> WebSocket no lo he podido probar sin credenciales de tenant: no hay hostnames
+> `ws.`/`wss.` en DNS, y la URL del socket solo la devuelve el backend en la
+> respuesta autenticada. No se ha comprobado que un socket conecte de verdad.
+>
+> Conclusion: **V2 no hay que retirarlo por falta de backend.** Queda como
+> experimento a validar en produccion con observacion.
+
+> **Aviso original, con el error de fondo.** El desarrollo de la Fase 2 ocurre en
+> una rama local que nunca se pusheo (la rama `development` no existe en
+> `origin`), pero **si se despliego**. Confundir "no esta en el repo" con "no
+> esta en produccion" fue el error: revisorar el codigo fuente no basta para
+> saber que hay desplegado, porque SAM y el repo pueden divergir.
 
 ## Bloqueantes
 
