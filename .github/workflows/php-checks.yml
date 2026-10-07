@@ -85,6 +85,14 @@ jobs:
           extensions: mbstring, xml, curl, zip, gd, intl, pgsql, mysqli
           coverage: none
 
+      - name: Ensure the locale Moodle's test framework requires
+        run: |
+          # PHPUnit refuses to start without en_AU.UTF-8. Hosted runners ship
+          # it, but generating it explicitly keeps the job from breaking on a
+          # slimmer image.
+          sudo sed -i 's/^# *en_AU.UTF-8 UTF-8/en_AU.UTF-8 UTF-8/' /etc/locale.gen
+          sudo locale-gen
+
       - name: Check out Moodle
         run: |
           git clone --depth 1 --branch ${{ matrix.moodle-branch }} \
