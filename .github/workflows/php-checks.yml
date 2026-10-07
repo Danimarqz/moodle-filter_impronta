@@ -136,8 +136,12 @@ jobs:
           # phpunit.xml.dist, which is what registers the <component>_testsuite
           # entry for an installed plugin.
           php admin/tool/phpunit/cli/init.php
+          # PHPUnit 9.6 (what Moodle 4.5 pins) only supports fail-on-warning,
+          # fail-on-risky, fail-on-skipped and fail-on-incomplete. Passing
+          # --fail-on-notice or --fail-on-deprecated aborts with
+          # 'Unknown option' before a single test runs.
           vendor/bin/phpunit --testsuite filter_impronta_testsuite \
-            --fail-on-warning --fail-on-notice --fail-on-deprecated
+            --fail-on-warning --fail-on-risky
 
   js:
     name: JavaScript tests
