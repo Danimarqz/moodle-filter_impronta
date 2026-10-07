@@ -123,15 +123,6 @@ if ($hassiteconfig) {
         40
     ));
 
-    $settings->add(new admin_setting_configtext(
-        'filter_impronta/experimentalusers',
-        get_string('experimentalusers', 'filter_impronta'),
-        get_string('experimentalusersdesc', 'filter_impronta'),
-        '2',
-        PARAM_RAW,
-        40
-    ));
-
     $settings->add(new admin_setting_configcolourpicker(
         'filter_impronta/watermarkcolor',
         get_string('watermarkcolor', 'filter_impronta'),

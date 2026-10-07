@@ -6,7 +6,6 @@
 // phpcs:ignore moodle.Files.RequireLogin.Missing -- Signed token authorizes the endpoint.
 require_once(__DIR__ . '/../../config.php');
 
-use filter_impronta\config;
 use filter_impronta\impronta_api;
 use filter_impronta\request;
 use filter_impronta\token;
@@ -51,9 +50,6 @@ $effectiveuserid = (int) $userid;
 if ($effectiveuserid <= 0 && isloggedin() && !isguestuser()) {
     global $USER;
     $effectiveuserid = (int) $USER->id;
-}
-if (!config::experimental_player_v2($effectiveuserid)) {
-    impronta_realtime_fail(403);
 }
 $sessionid = impronta_api::recall_session($path, $effectiveuserid, $playbackid);
 if ($sessionid === '') {

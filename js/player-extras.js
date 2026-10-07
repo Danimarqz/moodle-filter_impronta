@@ -40,15 +40,14 @@ window.ImprontaPlayerExtras = function(cfg) {
   }
 
   function init(player) {
-    // V2 is isolated behind the server-side flag. Any exception in this
-    // experimental path is swallowed so Legacy playback and analytics remain
-    // untouched.
+    // All video players use V2. Transport failures remain isolated from
+    // playback and from the Legacy comparison pipeline.
     var analyticsV2 = null;
     var realtimeV2 = null;
-    if (cfg.experimentalPlayerV2 && typeof ImprontaAnalyticsV2 === 'function') {
+    if (cfg.batchUrl && typeof ImprontaAnalyticsV2 === 'function') {
       try { analyticsV2 = ImprontaAnalyticsV2(player, cfg); } catch (e) {}
     }
-    if (cfg.experimentalPlayerV2 && typeof ImprontaRealtimeV2 === 'function') {
+    if (cfg.realtimeUrl && typeof ImprontaRealtimeV2 === 'function') {
       try { realtimeV2 = ImprontaRealtimeV2(player, cfg); } catch (e) {}
     }
     cfg.onPlaybackRenewed = function(fresh) {
@@ -199,7 +198,7 @@ window.ImprontaPlayerExtras = function(cfg) {
           watchedSeconds: lote.enviados,
           batchId: lote.batchId
         };
-        if (cfg.experimentalPlayerV2) { heartbeatPayload.realtime = true; }
+        if (cfg.realtimeUrl) { heartbeatPayload.realtime = true; }
         return fetch(heartbeatContext, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
@@ -243,9 +242,8 @@ window.ImprontaPlayerExtras = function(cfg) {
             if (analyticsV2 && typeof analyticsV2.setSession === 'function') {
               analyticsV2.setSession(nextSessionId);
             }
-            if (analyticsV2 && typeof analyticsV2.flush === 'function') {
-              analyticsV2.flush('checkpoint', false);
-            }
+            // setSession drains batches already queued by pause/end/close.
+            // A Legacy acknowledgement must not snapshot new V2 deltas.
           } catch (e) {}
         }
         if (r.realtime && realtimeV2 && typeof realtimeV2.setCredentials === 'function') {

@@ -283,7 +283,8 @@
           for (var i = 0; i < outbox.length; i += 1) {
             if (!outbox[i].sessionId) { outbox[i].sessionId = cfg.sessionId; }
           }
-          sendNext();
+          if (closing) { beaconOutbox(); }
+          else { sendNext(); }
         }
       },
       setSession: function(sessionId) {
@@ -293,7 +294,11 @@
         for (var i = 0; i < outbox.length; i += 1) {
           if (!outbox[i].sessionId) { outbox[i].sessionId = sessionId; }
         }
-        sendNext();
+        // A late first Legacy acknowledgement can arrive after pagehide.
+        // Drain only frozen batches and retain the closing transport; do not
+        // create a checkpoint or depend on a normal fetch continuation.
+        if (closing) { beaconOutbox(); }
+        else { sendNext(); }
       },
       changeVideo: function(videoId, nextConfig) {
         // The old batch remains tied to its old signed URL. A caller changing

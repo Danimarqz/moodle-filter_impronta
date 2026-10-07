@@ -50,5 +50,12 @@ function xmldb_filter_impronta_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2026080502, 'filter', 'impronta');
     }
 
+    if ($oldversion < 2026100304) {
+        // WSS and Analytics V2 now apply to all authorized video players.
+        // Do not keep a stale user list that could silently narrow rollout.
+        unset_config('experimentalusers', 'filter_impronta');
+        upgrade_plugin_savepoint(true, 2026100304, 'filter', 'impronta');
+    }
+
     return true;
 }

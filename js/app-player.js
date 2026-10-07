@@ -218,7 +218,7 @@
       flushPendiente = false;
       latidoEnVuelo = true;
       var heartbeatPayload = {watchedSeconds: enviados};
-      if (cfg.experimentalPlayerV2) { heartbeatPayload.realtime = true; }
+      if (cfg.realtimeUrl) { heartbeatPayload.realtime = true; }
       fetch(heartbeatContext, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -248,9 +248,8 @@
             if (analyticsV2 && typeof analyticsV2.setSession === 'function') {
               analyticsV2.setSession(nextSessionId);
             }
-            if (analyticsV2 && typeof analyticsV2.flush === 'function') {
-              analyticsV2.flush('checkpoint', false);
-            }
+            // setSession drains batches already queued by pause/end/close.
+            // A Legacy acknowledgement must not snapshot new V2 deltas.
           } catch (e) {}
         }
         if (r.realtime && realtimeV2 && typeof realtimeV2.setCredentials === 'function') {
@@ -395,7 +394,6 @@
       watermark: el.getAttribute('data-impronta-watermark'),
       color: el.getAttribute('data-impronta-color'),
       session: el.getAttribute('data-impronta-session'),
-      experimentalPlayerV2: el.getAttribute('data-impronta-v2') === '1',
       batchUrl: el.getAttribute('data-impronta-batch'),
       realtimeUrl: el.getAttribute('data-impronta-realtime'),
       checkpointInterval: 300000,
@@ -508,10 +506,10 @@
         });
         window.ImprontaWatermarkFit.attach(player, wm);
       }).then(function() {
-        if (cfg.experimentalPlayerV2 && typeof ImprontaAnalyticsV2 === 'function') {
+        if (cfg.batchUrl && typeof ImprontaAnalyticsV2 === 'function') {
           try { analyticsV2 = ImprontaAnalyticsV2(player, cfg); } catch (e) {}
         }
-        if (cfg.experimentalPlayerV2 && typeof ImprontaRealtimeV2 === 'function') {
+        if (cfg.realtimeUrl && typeof ImprontaRealtimeV2 === 'function') {
           try { realtimeV2 = ImprontaRealtimeV2(player, cfg); } catch (e) {}
         }
         cfg.onPlaybackRenewed = function(fresh) {

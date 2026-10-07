@@ -517,7 +517,6 @@ HTML;
                 $playbackid,
                 $mode
             ),
-            'v2' => !$isaudio && config::experimental_player_v2($tokenuserid) ? '1' : '0',
             'batch' => $isaudio ? '' : token::endpoint_url(
                 'batch.php',
                 $filename,
@@ -744,7 +743,6 @@ HTML;
                 $playbackid,
                 $mode
             ),
-            'experimentalPlayerV2' => config::experimental_player_v2($userid),
             'batchUrl' => token::endpoint_url(
                 'batch.php',
                 $filename,

@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(__dirname + '/../js/analytics-v2.js', 'utf8');
 
-function harness(fetchImpl) {
+function harness(fetchImpl, overrides = {}) {
   let now = 0;
   let nextId = 1;
   const timers = new Map();
@@ -45,14 +45,15 @@ function harness(fetchImpl) {
       return id;
     },
     clearInterval(id) { timers.delete(id); },
-    Date,
+    Date: class ClockDate extends Date {
+      static now() { return now; }
+    },
     console,
     addEventListener(type, handler) { windowListeners[type] = handler; },
     removeEventListener(type, handler) {
       if (windowListeners[type] === handler) delete windowListeners[type];
     },
   };
-  context.Date.now = () => now;
   context.window = context;
   vm.runInNewContext(source, context, {filename: 'analytics-v2.js'});
   const accumulator = context.ImprontaAnalyticsV2(player, {
@@ -61,6 +62,7 @@ function harness(fetchImpl) {
     sessionId: 'session-1',
     videoId: 'lesson-1',
     checkpointInterval: 300000,
+    ...overrides,
   });
 
   async function advance(milliseconds) {
@@ -260,4 +262,36 @@ test('beacons both the in-flight batch and deltas created before pagehide', asyn
   assert.notEqual(bodyOf({options: {body: beacons[0].body}}).batchId,
     bodyOf({options: {body: beacons[1].body}}).batchId);
   resolveFetch({ok: true});
+});
+
+test('session acknowledgement drains a queued pause without creating a checkpoint', async () => {
+  const h = harness(undefined, {sessionId: ''});
+  h.player.position = 1;
+  h.player.emit('timeupdate');
+  h.player.emit('pause');
+  await h.settle();
+  assert.equal(h.requests.length, 0);
+  h.accumulator.setSession('s1');
+  await h.settle();
+  assert.equal(h.requests.length, 1);
+  assert.equal(bodyOf(h.requests[0]).reason, 'pause');
+  h.accumulator.setSession('s1');
+  await h.settle();
+  assert.equal(h.requests.length, 1);
+});
+
+test('session arriving after pagehide drains pending batches via Beacon without a new checkpoint', async () => {
+  const h = harness(undefined, {sessionId: ''});
+  const beacons = [];
+  h.accumulator.setBeacon((url, body) => { beacons.push({url, body}); return true; });
+  h.player.position = 1;
+  h.player.emit('timeupdate');
+  h.windowListeners.pagehide();
+  assert.equal(beacons.length, 0);
+  h.accumulator.setSession('s1');
+  assert.equal(beacons.length, 1);
+  assert.equal(JSON.parse(beacons[0].body).reason, 'pagehide');
+  assert.equal(JSON.parse(beacons[0].body).sessionId, 's1');
+  await h.settle();
+  assert.equal(h.requests.length, 0);
 });

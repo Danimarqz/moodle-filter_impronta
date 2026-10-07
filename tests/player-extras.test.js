@@ -6,13 +6,14 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(__dirname + '/../js/player-extras.js', 'utf8');
 
-function harness(sessionFetch) {
+function harness(sessionFetch, withV2 = false) {
   let now = 0;
   let nextId = 1;
   const timers = new Map();
   const requests = [];
   const listeners = {};
   const windowListeners = {};
+  const v2Calls = [];
   const element = {parentNode: {insertBefore() {}}};
   const player = {
     handlers: {},
@@ -77,6 +78,15 @@ function harness(sessionFetch) {
     },
   };
   context.window = context;
+  context.ImprontaAnalyticsV2 = (video, cfg) => {
+    v2Calls.push('batch');
+    return {setSession(id) { v2Calls.push('batch:' + id); },
+      flush(reason) { v2Calls.push('flush:' + reason); }};
+  };
+  context.ImprontaRealtimeV2 = (video, cfg) => {
+    v2Calls.push('wss');
+    return {setSession(id) { v2Calls.push('wss:' + id); }, setCredentials() {}};
+  };
   vm.runInNewContext(source, context, {filename: 'player-extras.js'});
   context.ImprontaPlayerExtras({
     targetId: 'video',
@@ -85,6 +95,7 @@ function harness(sessionFetch) {
     subject: 'student',
     videoPath: 'lesson.m3u8',
     heartbeatSeconds: 15,
+    ...(withV2 ? {batchUrl: '/batch', realtimeUrl: '/realtime'} : {}),
   });
 
   async function advance(milliseconds) {
@@ -109,8 +120,22 @@ function harness(sessionFetch) {
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
   }
 
-  return {player, requests, listeners, windowListeners, document: context.document, advance, settle};
+  return {player, requests, v2Calls, listeners, windowListeners, document: context.document, advance, settle};
 }
+
+test('all video learners initialize V2 without an experimental flag or extra credential request', async () => {
+  const h = harness(() => Promise.resolve({ok: true, json: () => Promise.resolve({sessionId: 's1',
+    realtime: {url: 'wss://app.impronta.video/wss', token: 'test', expiresAt: 9999999999}})}), true);
+  assert.deepEqual(h.v2Calls, ['batch', 'wss']);
+  h.player.emit('play');
+  await h.advance(30000);
+  const sessions = h.requests.filter((request) => request.url === '/session');
+  assert.equal(sessions.length, 1);
+  assert.equal(JSON.parse(sessions[0].options.body).realtime, true);
+  assert.ok(h.v2Calls.includes('wss:s1'));
+  assert.ok(h.v2Calls.includes('batch:s1'));
+  assert.equal(h.requests.filter((request) => request.url === '/realtime').length, 0);
+});
 
 function watch(player, seconds) {
   for (let position = 1; position <= seconds; position += 1) {
@@ -118,6 +143,14 @@ function watch(player, seconds) {
     player.emit('timeupdate');
   }
 }
+
+test('Legacy heartbeat acknowledgements do not force V2 checkpoints', async () => {
+  const h = harness(() => Promise.resolve({ok: true, json: () => Promise.resolve({sessionId: 's1', heartbeatSeconds: 60})}), true);
+  h.player.emit('play');
+  await h.advance(180000);
+  assert.ok(h.v2Calls.filter((call) => call === 'batch:s1').length >= 2);
+  assert.deepEqual(h.v2Calls.filter((call) => call.startsWith('flush:')), []);
+});
 
 function bodyOf(request) {
   return JSON.parse(request.options.body);

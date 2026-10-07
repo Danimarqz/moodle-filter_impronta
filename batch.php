@@ -2,7 +2,7 @@
 // This file is part of Moodle - https://moodle.org/
 /* Copyright (C) 2026 DaniMarqz. GPL-3.0-or-later; see LICENSE. */
 /**
- * Relay for the experimental V2 analytics batches.
+ * Relay for V2 analytics batches for all authorized learners.
  *
  * V2 is deliberately kept on its own backend route and storage prefix. The
  * Legacy /events and /player/heartbeat paths remain active and unchanged.
@@ -13,7 +13,6 @@
 // phpcs:ignore moodle.Files.RequireLogin.Missing -- Signed token authorizes the endpoint.
 require_once(__DIR__ . '/../../config.php');
 
-use filter_impronta\config;
 use filter_impronta\impronta_api;
 use filter_impronta\request;
 use filter_impronta\token;
@@ -59,9 +58,6 @@ $effectiveuserid = (int) $userid;
 if ($effectiveuserid <= 0 && isloggedin() && !isguestuser()) {
     global $USER;
     $effectiveuserid = (int) $USER->id;
-}
-if (!config::experimental_player_v2($effectiveuserid)) {
-    impronta_batch_fail(403);
 }
 
 $payload = json_decode((string) file_get_contents('php://input'), true);

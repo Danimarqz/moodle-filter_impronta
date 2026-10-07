@@ -83,11 +83,28 @@
     }
 
     function isHidden() {
-      var style = window.getComputedStyle(mark);
-      return style.display === 'none'
-        || style.visibility === 'hidden'
-        || Number(style.opacity) < 0.05
-        || mark.offsetParent === null;
+      var opacity = 1;
+      for (var node = mark; node && node.nodeType === 1; node = node.parentElement) {
+        var style = window.getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden') { return true; }
+        var nodeOpacity = Number(style.opacity);
+        if (isFinite(nodeOpacity)) { opacity *= nodeOpacity; }
+      }
+      if (opacity < 0.05) { return true; }
+
+      // offsetParent puede ser null durante un resize/reflow aunque el texto
+      // siga visible (por ejemplo, al abrir DevTools acopladas). Usa el tamaño
+      // final del nodo, comprobado por el temporizador estable de abajo.
+      var rect = mark.getBoundingClientRect();
+      return rect.width === 0 || rect.height === 0;
+    }
+
+    function isPlaying() {
+      try {
+        return typeof player.paused === 'function' && player.paused() === false;
+      } catch (e) {
+        return false;
+      }
     }
 
     function registerTamper() {
@@ -97,8 +114,11 @@
       enforceStyles();
       var position = 0;
       try { position = player.currentTime ? player.currentTime() : 0; } catch (e) {}
-      onTamper(tamperCount, position);
-      if (tamperCount >= tamperLimit) {
+      // El evento representa superar el umbral, no cada mutación que observa
+      // el DOM. Emitirlo una sola vez evita inflar la señal si el reproductor
+      // vuelve a tocar el mismo nodo tras pausar.
+      if (tamperCount === tamperLimit + 1) {
+        onTamper(tamperCount, position);
         try { player.pause(); } catch (e) {}
       }
     }
@@ -120,9 +140,17 @@
           if (node === mark) { removed = true; }
         });
       });
+      // Video.js puede mover la marca durante su montaje o al reordenar
+      // componentes. MutationObserver entrega el lote después de que termine
+      // el JavaScript síncrono, así que si la marca vuelve a estar dentro del
+      // reproductor esa retirada fue solo una reubicación, no una manipulación.
+      var detached = removed && !root.contains(mark);
       mount();
       enforceStyles();
-      if (removed || isHidden()) { registerTamper(); }
+      // La retirada del nodo es inequívoca. Los cambios de visibilidad se
+      // confirman con dos lecturas estables en styleTimer: resize, fullscreen
+      // y cambios de layout de Video.js pueden ocultarlo solo durante un frame.
+      if (detached && isPlaying()) { registerTamper(); }
     });
     observer.observe(root, {
       childList: true,
@@ -136,7 +164,7 @@
     enforceStyles();
     styleTimer = setInterval(function() {
       if (destroyed) { return; }
-      if (document.hidden) {
+      if (document.hidden || !isPlaying()) {
         hiddenStreak = 0;
       } else if (isHidden()) {
         mount();

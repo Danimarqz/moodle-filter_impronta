@@ -51,8 +51,14 @@
       return true;
     }
 
+    function isPlaying() {
+      try { return !player.paused(); } catch (e) { return false; }
+    }
+
     function sendHeartbeat() {
-      if (!socket || socket.readyState !== 1 || !cfg.sessionId) { return; }
+      // Pause is already persisted by Analytics V2. Keep a short-lived idle
+      // socket reusable, but never pay for playing=false heartbeat messages.
+      if (!socket || socket.readyState !== 1 || !cfg.sessionId || !isPlaying()) { return; }
       var payload = {
         action: 'heartbeat',
         token: cfg.realtimeToken,
@@ -60,7 +66,7 @@
         videoId: String(cfg.videoId || cfg.videoPath || cfg.path || ''),
         position: metric(player, 'currentTime'),
         bufferedEnd: metric(player, 'bufferedEnd'),
-        playing: !player.paused(),
+        playing: true,
         timestamp: Math.floor(Date.now() / 1000)
       };
       try { socket.send(JSON.stringify(payload)); } catch (e) {}
@@ -68,6 +74,13 @@
 
     function connect(credentials, openGeneration) {
       if (openGeneration !== generation || !active || destroyed) { return; }
+      // open() crosses promise boundaries. Playback can pause before those
+      // continuations run; do not dial and release the flag for the next play.
+      if (!isPlaying()) {
+        connecting = false;
+        setState('disconnected');
+        return;
+      }
       if (!credentials || !credentials.url || !credentials.token || typeof root.WebSocket !== 'function') {
         throw new Error('realtime credentials');
       }
@@ -99,7 +112,7 @@
     }
 
     function open() {
-      if (!active || destroyed || connecting || !cfg.sessionId ||
+      if (!active || destroyed || connecting || !isPlaying() || !cfg.sessionId ||
           !cfg.realtimeSocketUrl || !cfg.realtimeToken ||
           cfg.realtimeExpiresAt <= Math.floor(Date.now() / 1000) + 60) {
         return;
@@ -124,7 +137,10 @@
     }
 
     function scheduleReconnect() {
-      if (!active || destroyed || reconnectTimer) { return; }
+      if (!active || destroyed || reconnectTimer || !isPlaying()) {
+        if (!socket && !destroyed) { setState('disconnected'); }
+        return;
+      }
       setState('reconnecting');
       var delay = backoff[Math.min(reconnectAttempt, backoff.length - 1)];
       reconnectAttempt += 1;
@@ -137,6 +153,7 @@
     function start() {
       if (destroyed) { return; }
       active = true;
+      if (socket && socket.readyState === 1) { sendHeartbeat(); }
       if (!socket && !reconnectTimer) { open(); }
     }
 

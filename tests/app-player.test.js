@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(__dirname + '/../js/app-player.js', 'utf8');
 
-function harness(firstResponse) {
+function harness(firstResponse, withV2 = false, subsequentResponse) {
   let now = 0;
   let nextTimer = 1;
   let player;
@@ -14,6 +14,7 @@ function harness(firstResponse) {
   const requests = [];
   const documentListeners = {};
   const windowListeners = {};
+  const v2Calls = [];
   const element = {
     attrs: {
       'data-impronta-playlist': '/playlist.m3u8',
@@ -50,6 +51,10 @@ function harness(firstResponse) {
       if (documentListeners[type] === handler) delete documentListeners[type];
     }
   };
+  if (withV2) {
+    element.attrs['data-impronta-batch'] = '/batch';
+    element.attrs['data-impronta-realtime'] = '/realtime';
+  }
   let videojsOptions;
   const context = {
     window: {
@@ -78,6 +83,7 @@ function harness(firstResponse) {
       if (url === '/session' && requests.filter((r) => r.url === '/session').length === 1) {
         return firstResponse;
       }
+      if (url === '/session' && subsequentResponse) return subsequentResponse;
       return Promise.resolve({ok: true, json: () => Promise.resolve({heartbeatSeconds: 60})});
     },
     videojs(video, options) { videojsOptions = options; return player; },
@@ -86,6 +92,15 @@ function harness(firstResponse) {
     console
   };
   context.window.window = context.window;
+  context.ImprontaAnalyticsV2 = () => {
+    v2Calls.push('batch');
+    return {setSession(id) { v2Calls.push('batch:' + id); },
+      flush(reason) { v2Calls.push('flush:' + reason); }};
+  };
+  context.ImprontaRealtimeV2 = () => {
+    v2Calls.push('wss');
+    return {setSession(id) { v2Calls.push('wss:' + id); }, setCredentials() {}};
+  };
   context.window.ImprontaWatermarkFit = context.ImprontaWatermarkFit;
   player = {
     handlers: {},
@@ -123,8 +138,33 @@ function harness(firstResponse) {
   async function settle() {
     for (let i = 0; i < 20; i += 1) await Promise.resolve();
   }
-  return {player, requests, windowListeners, videojsOptions: () => videojsOptions, advance, settle};
+  return {player, requests, v2Calls, windowListeners, videojsOptions: () => videojsOptions, advance, settle};
 }
+
+test('app video learners initialize WSS and batches without pilot attributes', async () => {
+  const h = harness(Promise.resolve({ok: true, json: () => Promise.resolve({sessionId: 's1',
+    realtime: {url: 'wss://app.impronta.video/wss', token: 'test', expiresAt: 9999999999}})}), true);
+  await h.settle();
+  assert.deepEqual(h.v2Calls, ['batch', 'wss']);
+  h.player.emit('play');
+  await h.advance(30000);
+  const sessions = h.requests.filter((request) => request.url === '/session');
+  assert.equal(sessions.length, 1);
+  assert.equal(JSON.parse(sessions[0].options.body).realtime, true);
+  assert.ok(h.v2Calls.includes('wss:s1'));
+  assert.ok(h.v2Calls.includes('batch:s1'));
+  assert.equal(h.requests.filter((request) => request.url === '/realtime').length, 0);
+});
+
+test('app Legacy heartbeat acknowledgements do not force V2 checkpoints', async () => {
+  const response = () => Promise.resolve({ok: true, json: () => Promise.resolve({sessionId: 's1', heartbeatSeconds: 60})});
+  const h = harness(response(), true, response());
+  await h.settle();
+  h.player.emit('play');
+  await h.advance(180000);
+  assert.ok(h.v2Calls.filter((call) => call === 'batch:s1').length >= 2);
+  assert.deepEqual(h.v2Calls.filter((call) => call.startsWith('flush:')), []);
+});
 
 test('flushes seconds added while a heartbeat is in flight', async () => {
   let resolveFirst;
