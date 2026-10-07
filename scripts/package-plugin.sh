@@ -56,6 +56,17 @@ for d in "${DIRS[@]}"; do
     [ -d "${d}" ] || { echo "missing packaged directory: ${d}" >&2; exit 1; }
 done
 
+# Anything at the repository root that is not packaged is either a mistake or a
+# deliberate exclusion; list it so it cannot ship unnoticed the way a stray
+# empty file once did.
+echo "Root entries not packaged (intentional?):"
+for entry in $(ls -1); do
+    case " ${FILES[*]} ${DIRS[*]} " in
+        *" ${entry} "*) ;;
+        *) [ "${entry}" != "build" ] && echo "  - ${entry}" ;;
+    esac
+done
+
 # lang/ must ship English only: Moodle distributes every other language through
 # AMOS once the plugin is approved.
 if [ -d lang ] && [ "$(ls -1 lang)" != "en" ]; then
