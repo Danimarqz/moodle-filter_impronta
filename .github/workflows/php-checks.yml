@@ -115,8 +115,15 @@ jobs:
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'
+          # 8.3 for every branch, not 8.2. 4.5 and 5.1 run happily on it, and
+          # 5.2 refuses to install on anything lower: "Moodle 5.2 or later
+          # requires at least PHP 8.3.0 (currently using version 8.2.x)".
+          php-version: '8.3'
           extensions: mbstring, xml, curl, zip, gd, intl, pgsql, mysqli
+          # install.php runs Moodle's environment check and aborts on
+          # "PHP setting max_input_vars must be at least 5000". The runner
+          # defaults to 1000, so the install never reaches the database.
+          ini-values: max_input_vars=5000
           coverage: none
 
       - name: Ensure the locale Moodle's test framework requires
