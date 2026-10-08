@@ -5,10 +5,21 @@ name: PHP checks
 # The plugin ships no build step (Moodle requires a ZIP that installs without
 # composer or shell access), so this job only verifies: syntax, the Moodle
 # coding standard, and PHPUnit inside a real Moodle test site.
+#
+# Two things about this plugin's supported range drive everything below:
+#
+#   * Moodle moved its web root into public/ between 4.5 and 5.x, and both
+#     layouts are still in service. The plugin path is filter/impronta on 4.5
+#     and public/filter/impronta on 5.x. A wrong path does not raise an error,
+#     it silently does nothing, so the layout is detected rather than assumed.
+#   * MariaDB's floor moves with the branch: 4.5 accepts 10.11, and 5.x refuses
+#     to run on anything below 11.4. Installing 5.x on 10.11 succeeds and then
+#     the site dies with "version 11.4.0 is required and you are running
+#     10.11.x", which reads like a plugin fault and is not one.
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
@@ -20,7 +31,7 @@ jobs:
     name: Syntax + Moodle Code Checker
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
@@ -31,18 +42,23 @@ jobs:
 
       - name: Syntax check every PHP file
         run: |
-          find . -name '*.php' -not -path './vendor/*' -print0 \
+          find . -name '*.php' -not -path './vendor/*' -not -path './build/*' -print0 \
             | xargs -0 -n1 php -l
 
       - name: Install Moodle Code Checker
         run: |
+          # moodle-cs pulls in the phpcs composer-installer plugin, and modern
+          # composer refuses to run plugins unless they are allowed explicitly.
+          # Without this line the install fails before phpcs is ever reached.
+          composer global config --no-plugins \
+            allow-plugins.dealerdirect/phpcodesniffer-composer-installer true
           composer global require --quiet moodlehq/moodle-cs
           echo "$(composer global config bin-dir --absolute)" >> "$GITHUB_PATH"
 
       - name: Run phpcs with the Moodle standard
         run: |
           phpcs --standard=moodle --extensions=php \
-            --ignore=vendor/*,node_modules/* \
+            --ignore=vendor/*,build/* \
             --report=full --report-width=120 .
 
   phpunit:
@@ -51,10 +67,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 4.5 is the current LTS; 5.1 and 5.2 are the maintained stables.
-        # Add branches here as Moodle's support window moves.
-        moodle-branch: ['MOODLE_405_STABLE', 'MOODLE_501_STABLE', 'MOODLE_502_STABLE']
-        database: [pgsql, mariadb]
+        # Spelled out per row rather than crossed with a database list: the
+        # MariaDB image has to change with the branch, and that cannot be
+        # expressed by combining two independent matrix axes.
+        include:
+          - moodle-branch: MOODLE_405_STABLE
+            mariadb: '10.11'
+            database: pgsql
+          - moodle-branch: MOODLE_405_STABLE
+            mariadb: '10.11'
+            database: mariadb
+          - moodle-branch: MOODLE_501_STABLE
+            mariadb: '11.4'
+            database: pgsql
+          - moodle-branch: MOODLE_501_STABLE
+            mariadb: '11.4'
+            database: mariadb
+          - moodle-branch: MOODLE_502_STABLE
+            mariadb: '11.4'
+            database: pgsql
+          - moodle-branch: MOODLE_502_STABLE
+            mariadb: '11.4'
+            database: mariadb
     services:
       postgres:
         image: postgres:16
@@ -67,7 +101,7 @@ jobs:
           --health-cmd pg_isready --health-interval 10s
           --health-timeout 5s --health-retries 5
       mariadb:
-        image: mariadb:10.11
+        image: mariadb:${{ matrix.mariadb }}
         env:
           MARIADB_ROOT_PASSWORD: root
           MARIADB_DATABASE: moodle
@@ -75,8 +109,8 @@ jobs:
           MARIADB_PASSWORD: moodle
         ports: ['3306:3306']
         options: >-
-          --health-cmd="mysqladmin ping -pmoodle" --health-interval 10s
-          --health-timeout 5s --health-retries 5
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s --health-timeout=5s --health-retries=10
     steps:
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
@@ -87,10 +121,9 @@ jobs:
 
       - name: Ensure the locale Moodle's test framework requires
         run: |
-          # PHPUnit refuses to start without en_AU.UTF-8. Hosted runners ship
-          # it, but generating it explicitly keeps the job from breaking on a
-          # slimmer image.
-          sudo sed -i 's/^# *en_AU.UTF-8 UTF-8/en_AU.UTF-8 UTF-8/' /etc/locale.gen
+          # The test framework refuses to start without en_AU.UTF-8:
+          # "Required locale 'en_AU.UTF-8' is not installed."
+          sudo sed -i 's/^# *en_AU.UTF-8 UTF-8/en_AU.UTF-8 UTF-8/' /etc/locale.gen || true
           sudo locale-gen
 
       - name: Check out Moodle
@@ -98,60 +131,137 @@ jobs:
           git clone --depth 1 --branch ${{ matrix.moodle-branch }} \
             https://github.com/moodle/moodle.git /tmp/moodle
 
+      - name: Work out this branch's directory layout
+        id: layout
+        run: |
+          # 5.x keeps the web root in public/; 4.5 keeps it at the repository
+          # root. The CLI scripts stay outside it either way.
+          if [ -d /tmp/moodle/public/admin ]; then
+            echo "code=/tmp/moodle/public" >> "$GITHUB_OUTPUT"
+            echo "Detected the 5.x layout: code under public/"
+          else
+            echo "code=/tmp/moodle" >> "$GITHUB_OUTPUT"
+            echo "Detected the 4.x layout: code at the repository root"
+          fi
+          echo "cli=/tmp/moodle/admin" >> "$GITHUB_OUTPUT"
+
       - name: Place the plugin in the Moodle tree
         run: |
-          mkdir -p /tmp/moodle/filter/impronta
-          rsync -a --exclude '.git' ./ /tmp/moodle/filter/impronta/
+          mkdir -p "${{ steps.layout.outputs.code }}/filter/impronta"
+          rsync -a --exclude '.git' --exclude 'build' ./ \
+            "${{ steps.layout.outputs.code }}/filter/impronta/"
 
-      - name: Configure the test site
+      - name: Give the database a UTF-8 charset
+        if: matrix.database == 'mariadb'
         run: |
+          # The service creates its database from the image default, which is
+          # not necessarily utf8mb4. Moodle refuses to install unless it is, and
+          # the message it gives ("must be installed and enabled") never
+          # mentions the charset of the database.
+          docker exec "${{ job.services.mariadb.id }}" \
+            mariadb -uroot -proot -e "
+              DROP DATABASE IF EXISTS moodle;
+              CREATE DATABASE moodle CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+              GRANT ALL PRIVILEGES ON moodle.* TO 'moodle'@'%';
+              FLUSH PRIVILEGES;"
+
+      - name: Install Moodle with the plugin in place
+        run: |
+          set -eu
           mkdir -p /tmp/moodledata && chmod 0777 /tmp/moodledata
-          if [ "${{ matrix.database }}" = "pgsql" ]; then
-            export DBTYPE=pgsql DBHOST=127.0.0.1 DBNAME=moodle DBUSER=moodle DBPASS=moodle
-          else
-            export DBTYPE=mariadb DBHOST=127.0.0.1 DBNAME=moodle DBUSER=moodle DBPASS=moodle
-          fi
-          php /tmp/moodle/admin/cli/install.php \
-            --wwwroot=http://localhost --dataroot=/tmp/moodledata \
-            --dbtype="$DBTYPE" --dbhost="$DBHOST" --dbname="$DBNAME" \
-            --dbuser="$DBUSER" --dbpass="$DBPASS" \
-            --fullname=CI --shortname=CI --adminpass=Admin123! \
+          if [ "${{ matrix.database }}" = "pgsql" ]; then DBTYPE=pgsql; else DBTYPE=mariadb; fi
+          # install.php lives outside the web root, at the repository root, on
+          # every branch. A wrong path gives "Could not open input file", which
+          # looks like a workflow fault rather than a layout difference.
+          php "${{ steps.layout.outputs.cli }}/cli/install.php" \
+            --wwwroot=http://localhost \
+            --dataroot=/tmp/moodledata \
+            --dbtype="$DBTYPE" --dbhost=127.0.0.1 --dbname=moodle \
+            --dbuser=moodle --dbpass=moodle \
+            --fullname=CI --shortname=CI --adminuser=admin --adminpass=Admin123! \
             --non-interactive --agree-license
-          # PHPUnit needs its own dataroot and table prefix in config.php.
-          # Without phpunit_dataroot the runner aborts with "Missing
-          # $CFG->phpunit_dataroot in config.php, can not run tests!" before
-          # running a single test.
+          # PHPUnit wants its own dataroot and table prefix in config.php. It
+          # also refuses a phpunit dataroot identical to the site one.
           mkdir -p /tmp/moodledata_phpunit && chmod 0777 /tmp/moodledata_phpunit
           {
             echo "\$CFG->phpunit_prefix = 'phpu_';"
             echo "\$CFG->phpunit_dataroot = '/tmp/moodledata_phpunit';"
-            echo "\$CFG->debug = 32767;"
-            echo "\$CFG->debugdisplay = 1;"
           } >> /tmp/moodle/config.php
 
-      - name: Run the plugin PHPUnit suite
+      - name: Install PHPUnit
+        working-directory: /tmp/moodle
+        run: composer install --no-interaction
+
+      - name: Initialise the test environment
+        working-directory: /tmp/moodle
         run: |
-          cd /tmp/moodle
-          # init.php sets up the phpunit_* tables and rebuilds phpunit.xml from
-          # phpunit.xml.dist, which is what registers the <component>_testsuite
-          # entry for an installed plugin.
-          php admin/tool/phpunit/cli/init.php
-          # PHPUnit 9.6 (what Moodle 4.5 pins) only supports fail-on-warning,
-          # fail-on-risky, fail-on-skipped and fail-on-incomplete. Passing
-          # --fail-on-notice or --fail-on-deprecated aborts with
-          # 'Unknown option' before a single test runs.
-          vendor/bin/phpunit --testsuite filter_impronta_testsuite \
-            --fail-on-warning --fail-on-risky
+          php "${{ steps.layout.outputs.code }}/admin/tool/phpunit/cli/init.php"
+
+      - name: Run the plugin PHPUnit suite
+        working-directory: /tmp/moodle
+        run: |
+          # One file per invocation, deliberately, and the file list is built
+          # recursively.
+          #
+          # Handed a directory, phpunit prints "No tests executed!" and exits 0,
+          # so the job reports success while running nothing. Handed several
+          # files at once, PHPUnit 9 (what 4.5 pins) silently runs only the
+          # first. And a flat tests/*_test.php glob misses tests/privacy/, which
+          # would drop the privacy suite from the run without saying so.
+          #
+          # Each file gets its own run and the number executed is printed, so a
+          # file that never runs shows up in the log instead of hiding behind a
+          # total that looks plausible.
+          TESTS_DIR="${{ steps.layout.outputs.code }}/filter/impronta/tests"
+          if [ ! -d "$TESTS_DIR" ]; then
+            echo "::error::No tests directory at $TESTS_DIR"
+            exit 1
+          fi
+          failed=0
+          ran=0
+          while IFS= read -r file; do
+            echo "::group::${file#"$TESTS_DIR"/}"
+            if ! vendor/bin/phpunit --fail-on-warning --fail-on-risky "$file"; then
+              failed=1
+            fi
+            echo "::endgroup::"
+            ran=$((ran + 1))
+          done < <(find "$TESTS_DIR" -name '*_test.php' | sort)
+          echo "Ran $ran test file(s)."
+          # A green tick that means "nothing ran" is worse than a red one,
+          # because it is the version you believe.
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::No test file was executed under $TESTS_DIR"
+            exit 1
+          fi
+          exit $failed
+
+      - name: Show what went wrong
+        if: failure()
+        run: |
+          echo "== layout =="
+          ls /tmp/moodle
+          echo "== config.php =="
+          tail -40 /tmp/moodle/config.php || true
+          echo "== moodledata logs =="
+          find /tmp/moodledata -name '*.log' -exec tail -60 {} \; 2>/dev/null || true
 
   js:
     name: JavaScript tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
         # The JavaScript tests are dependency-free: they exercise the browser
         # sources directly with the node:test runner, so there is no install.
       - name: Run node:test suite
-        run: node --test tests/*.test.js
+        run: |
+          set -- tests/*.test.js
+          if [ ! -f "$1" ]; then
+            echo "::error::No JavaScript test files found."
+            exit 1
+          fi
+          echo "Running $# test file(s)."
+          node --test "$@"
