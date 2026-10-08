@@ -112,6 +112,8 @@ jobs:
           --health-cmd="healthcheck.sh --connect --innodb_initialized"
           --health-interval=10s --health-timeout=5s --health-retries=10
     steps:
+      - uses: actions/checkout@v6
+
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -154,9 +156,18 @@ jobs:
 
       - name: Place the plugin in the Moodle tree
         run: |
+          # Guard against an empty source: the plugin tree must exist here
+          # before it is copied anywhere. Without this the failure surfaces two
+          # steps later as "No tests directory", which points at the tests
+          # instead of at the missing checkout.
+          if [ ! -f version.php ]; then
+            echo "::error::version.php not found in the workspace; the repository was not checked out."
+            exit 1
+          fi
           mkdir -p "${{ steps.layout.outputs.code }}/filter/impronta"
           rsync -a --exclude '.git' --exclude 'build' ./ \
             "${{ steps.layout.outputs.code }}/filter/impronta/"
+          ls "${{ steps.layout.outputs.code }}/filter/impronta/version.php"
 
       - name: Give the database a UTF-8 charset
         if: matrix.database == 'mariadb'
