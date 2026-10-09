@@ -30,7 +30,7 @@ class renewal {
      * @param bool $app Whether the request comes from the app.
      * @return array Renewed playback URLs.
      */
-    public static function issue(string $url, int $currentuserid, bool $app): array {
+    public static function issue(string $url, int $currentuserid, bool $app, bool $newplayback = false): array {
         $query = parse_url($url, PHP_URL_QUERY);
         if (!is_string($query)) {
             throw new \moodle_exception('tokeninvalid', 'filter_impronta');
@@ -64,7 +64,10 @@ class renewal {
             throw new \moodle_exception('tokeninvalid', 'filter_impronta');
         }
         $newexpires = time() + config::token_ttl();
-        $newplaybackid = 'r' . bin2hex(random_bytes(8));
+        // A cache miss is not a replay. Reuse the signed intent; the backend
+        // bootstrap receipt resolves its original session/version on retries.
+        $sameplayback = !$newplayback && token::bootstrap_intent($playbackid) !== '';
+        $newplaybackid = $sameplayback ? $playbackid : token::playback_id();
         $newtoken = token::generate(
             $path,
             $newexpires,
@@ -72,7 +75,7 @@ class renewal {
             request::ip(),
             $userid,
             $app,
-            '',
+            $group,
             $newplaybackid
         );
         return [
@@ -84,7 +87,7 @@ class renewal {
                 $courseid,
                 $userid,
                 !empty($params['a']) ? ['a' => 1] : [],
-                '',
+                $group,
                 $newplaybackid
             ),
             'eventsUrl' => token::endpoint_url(
@@ -95,7 +98,7 @@ class renewal {
                 $courseid,
                 $userid,
                 [],
-                '',
+                $group,
                 $newplaybackid
             ),
             'sessionUrl' => token::endpoint_url(
@@ -106,7 +109,7 @@ class renewal {
                 $courseid,
                 $userid,
                 [],
-                '',
+                $group,
                 $newplaybackid
             ),
             'batchUrl' => token::endpoint_url(
@@ -117,7 +120,7 @@ class renewal {
                 $courseid,
                 $userid,
                 [],
-                '',
+                $group,
                 $newplaybackid
             ),
             'realtimeUrl' => token::endpoint_url(
@@ -128,10 +131,11 @@ class renewal {
                 $courseid,
                 $userid,
                 [],
-                '',
+                $group,
                 $newplaybackid
             ),
             'expiresAt' => $newexpires,
+            'samePlayback' => $sameplayback,
         ];
     }
 }

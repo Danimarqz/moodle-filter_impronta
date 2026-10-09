@@ -130,7 +130,7 @@ class player {
         // playlist.php, heartbeat.php- ocurre aquí; el navegador solo usa URLs
         // ya firmadas.
         if ($playbackid === '') {
-            $playbackid = 'r' . bin2hex(random_bytes(8));
+            $playbackid = token::playback_id();
         }
 
         // Identidad de esta reproducción. Se resuelve antes que nada porque la

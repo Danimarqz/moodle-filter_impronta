@@ -245,7 +245,8 @@ class impronta_api {
         string $path,
         ?string &$reason = null,
         int $userid = 0,
-        string $authorizationgroupid = ''
+        string $authorizationgroupid = '',
+        string $playbackid = ''
     ): ?array {
         global $CFG, $USER;
 
@@ -297,6 +298,14 @@ class impronta_api {
         }
         if ($authorizationgroupid !== '') {
             $payload['authorizationGroupId'] = $authorizationgroupid;
+        }
+        $intent = token::bootstrap_intent($playbackid);
+        if ($intent !== '') {
+            $payload['bootstrapRequestId'] = $intent;
+            $lease = self::playback_lease($path, $userid, $playbackid);
+            if (!empty($lease['mediaProof'])) {
+                $payload['previousFragmentToken'] = $lease['mediaProof'];
+            }
         }
         $response = $curl->post(rtrim(self::URL, '/') . '/player/playlist', json_encode($payload), [
             'CURLOPT_TIMEOUT' => 10,
@@ -375,6 +384,60 @@ class impronta_api {
     private static function session_key(string $path, int $userid, string $playbackid = ''): string {
         $subject = self::subject($userid);
         return $subject === '' ? '' : sha1($subject . '|' . $path . '|' . $playbackid);
+    }
+
+    /**
+     * Reads server-issued context, never a client-supplied media proof.
+     * @param string $path Class path.
+     * @param int $userid Signed Moodle user.
+     * @param string $playbackid Signed instance.
+     * @return array Empty if unavailable; never substitute another instance.
+     */
+    public static function playback_lease(string $path, int $userid, string $playbackid): array {
+        $key = self::session_key($path, $userid, $playbackid);
+        if ($key === '' || $playbackid === '') {
+            return [];
+        }
+        $cache = \cache::make_from_params(\cache_store::MODE_APPLICATION, 'filter_impronta', 'sessions');
+        $value = $cache->get('lease_' . $key);
+        return is_array($value) && time() - (int) ($value['at'] ?? 0) <= 7 * DAYSECS ? $value : [];
+    }
+
+    /**
+     * Keeps the media identity through token renewals; no monthly consumption.
+     * @param string $path Class path.
+     * @param int $userid Signed user.
+     * @param string $playbackid Signed instance.
+     * @param array $response Trusted backend response.
+     */
+    public static function remember_playback_lease(string $path, int $userid, string $playbackid, array $response): void {
+        $key = self::session_key($path, $userid, $playbackid);
+        if ($key === '' || $playbackid === '' || empty($response['sessionId'])) {
+            return;
+        }
+        $old = self::playback_lease($path, $userid, $playbackid);
+        $sessionid = (string) $response['sessionId'];
+        $rt = isset($response['realtime']) && is_array($response['realtime']) ? $response['realtime'] : [];
+        $authorized = isset($response['authorized']) && is_array($response['authorized']) ? $response['authorized'] : [];
+        $proof = (string) ($authorized['fragment_token'] ?? $rt['mediaProof'] ?? '');
+        if ($proof === '' && !empty($old['mediaProof'])) {
+            // A late Legacy/auxiliary response cannot downgrade a pinned lease.
+            return;
+        }
+        if (strlen($proof) > 4096 || ($proof === '' && (empty($rt['url']) || empty($rt['token'])))) {
+            return;
+        }
+        // A response for another session must not replace this instance's lease.
+        if (!empty($old['mediaProof']) && !empty($old['sessionId']) && $old['sessionId'] !== $sessionid) {
+            return;
+        }
+        $lease = [
+            'at' => time(), 'sessionId' => $sessionid, 'mediaProof' => $proof,
+            'manifestExpiresAt' => (int) ($authorized['expires_at'] ?? $old['manifestExpiresAt'] ?? 0),
+            'realtime' => $rt ?: ($old['realtime'] ?? []),
+        ];
+        $cache = \cache::make_from_params(\cache_store::MODE_APPLICATION, 'filter_impronta', 'sessions');
+        $cache->set('lease_' . $key, $lease);
     }
 
     /**
@@ -617,7 +680,8 @@ class impronta_api {
         int $watched,
         string $authorizationgroupid = '',
         string $batchid = '',
-        bool $realtime = false
+        bool $realtime = false,
+        string $mediaproof = ''
     ): ?array {
         global $CFG;
 
@@ -650,6 +714,9 @@ class impronta_api {
         }
         if ($realtime) {
             $payload['realtime'] = true;
+        }
+        if ($mediaproof !== '') {
+            $payload['mediaProof'] = $mediaproof;
         }
         $response = $curl->post(rtrim(self::URL, '/') . '/player/heartbeat', json_encode($payload), [
             // Corto a propósito: esto corre cada dos minutos por cada alumno
@@ -716,7 +783,8 @@ class impronta_api {
         string $path,
         int $userid,
         string $sessionid,
-        string $authorizationgroupid = ''
+        string $authorizationgroupid = '',
+        string $mediaproof = ''
     ): ?array {
         global $CFG;
         require_once($CFG->libdir . '/filelib.php');
@@ -732,6 +800,9 @@ class impronta_api {
         ];
         if ($authorizationgroupid !== '') {
             $payload['authorizationGroupId'] = $authorizationgroupid;
+        }
+        if ($mediaproof !== '') {
+            $payload['mediaProof'] = $mediaproof;
         }
         $curl = new \curl();
         $curl->setHeader([

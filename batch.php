@@ -152,6 +152,13 @@ $batch = [
     'startedAt' => isset($payload['startedAt']) && is_string($payload['startedAt']) ? $payload['startedAt'] : '',
     'sentAt' => isset($payload['sentAt']) && is_string($payload['sentAt']) ? $payload['sentAt'] : '',
 ];
+$lease = impronta_api::playback_lease($path, $effectiveuserid, $playbackid);
+if (!empty($lease['mediaProof'])) {
+    if (($lease['sessionId'] ?? '') !== $sessionid) {
+        impronta_batch_fail(409);
+    }
+    $batch['mediaProof'] = $lease['mediaProof'];
+}
 
 if (!impronta_api::analytics_batch($batch)) {
     impronta_batch_fail(502);

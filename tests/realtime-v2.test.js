@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(__dirname + '/../js/realtime-v2.js', 'utf8');
 
-function playbackHarness() {
+function playbackHarness(overrides = {}, fetchImpl) {
   const sent = [];
   const sockets = [];
   const intervals = new Map();
@@ -23,6 +23,7 @@ function playbackHarness() {
   };
   const context = {
     window: {},
+    fetch: fetchImpl,
     WebSocket: function Socket() {
       sockets.push(this);
       this.readyState = 0;
@@ -40,7 +41,7 @@ function playbackHarness() {
   const client = context.ImprontaRealtimeV2(player, {
     enabled: true, realtimeUrl: '/realtime', realtimeSocketUrl: 'wss://example/ws',
     realtimeToken: 'signed', realtimeExpiresAt: Math.floor(Date.now() / 1000) + 3600,
-    sessionId: 's1', videoId: 'v1',
+    sessionId: 's1', videoId: 'v1', ...overrides,
   });
   async function settle() { for (let i = 0; i < 8; i++) await Promise.resolve(); }
   async function open() {
@@ -51,6 +52,33 @@ function playbackHarness() {
   }
   return {player, client, sent, sockets, intervals, timeouts, settle, open};
 }
+
+test('starts before the Legacy heartbeat using cached bootstrap credentials from Moodle', async () => {
+  let requests = 0;
+  const h = playbackHarness({sessionId:'',realtimeToken:'',onRealtimeSession(id) { assert.equal(id,'p1-cached'); }},() => {
+    requests++;
+    return Promise.resolve({ok:true,json:() => Promise.resolve({sessionId:'p1-cached',url:'wss://example/ws',token:'signed',expiresAt:9999999999,intervalSeconds:60,authorizedPlayback:true,manifestExpiresAt:9999999999})});
+  });
+  await h.open();
+  assert.equal(requests,1);
+  assert.equal(h.sent.length,1);
+  assert.equal(h.sent[0].sessionId,'p1-cached');
+  h.player.emit('seeked');
+  assert.equal(h.sent.length,2);
+});
+
+test('a bootstrap race observes reconnect backoff instead of refetching on every timeupdate', async () => {
+  let requests = 0;
+  const h = playbackHarness({sessionId:'',realtimeToken:''},() => { requests++; return Promise.resolve({ok:false}); });
+  h.player.emit('play'); await h.settle();
+  assert.equal(requests,1);
+  assert.equal(h.timeouts.size,1);
+  for (let i=0;i<100;i++) h.player.emit('timeupdate');
+  await h.settle();
+  assert.equal(requests,1);
+  h.client.stop();
+  assert.equal(h.timeouts.size,0);
+});
 
 test('sends no WSS payload while paused and reports resume immediately on the same connection', async () => {
   const h = playbackHarness();

@@ -50,12 +50,16 @@ window.ImprontaPlayerExtras = function(cfg) {
     if (cfg.realtimeUrl && typeof ImprontaRealtimeV2 === 'function') {
       try { realtimeV2 = ImprontaRealtimeV2(player, cfg); } catch (e) {}
     }
+    cfg.onRealtimeSession = function(sessionId) {
+      if (analyticsV2 && typeof analyticsV2.setSession === 'function') { analyticsV2.setSession(sessionId); }
+    };
     cfg.onPlaybackRenewed = function(fresh) {
+      var sameSession = fresh.samePlayback ? String(cfg.sessionId || '') : '';
       if (analyticsV2 && typeof analyticsV2.setContext === 'function') {
-        analyticsV2.setContext({batchUrl: fresh.batchUrl, sessionId: ''});
+        analyticsV2.setContext({batchUrl: fresh.batchUrl, sessionId: sameSession});
       }
       if (realtimeV2 && typeof realtimeV2.setContext === 'function') {
-          realtimeV2.setContext({realtimeUrl: fresh.realtimeUrl, sessionId: ''});
+          realtimeV2.setContext({realtimeUrl: fresh.realtimeUrl, sessionId: sameSession});
       }
     };
     var positionKey = 'impronta:position:' + cfg.subject + ':' + cfg.videoPath;
@@ -68,13 +72,16 @@ window.ImprontaPlayerExtras = function(cfg) {
     });
     player.on('ended', function() { try { localStorage.removeItem(positionKey); } catch (e) {} });
     var renew = cfg.renewUrl && window.ImprontaPlaybackRenew &&
-      window.ImprontaPlaybackRenew(cfg, function(url) {
+      window.ImprontaPlaybackRenew(cfg, function(url, options) {
         var form = new FormData();
         form.append('url', url);
         form.append('sesskey', cfg.sesskey);
+        if (options && options.newPlayback) { form.append('newplayback', '1'); }
         return fetch(cfg.renewUrl, {method: 'POST', body: form, credentials: 'same-origin'})
           .then(function(res) { if (!res.ok) { throw new Error('renew ' + res.status); } return res.json(); });
       });
+    cfg.beforeAuthorizedReload = function() { if (realtimeV2) { realtimeV2.stop(); } };
+    if (renew && window.ImprontaAuthorizedLifecycle) { window.ImprontaAuthorizedLifecycle(player, cfg, renew); }
     var queue = [];
     var analyticsHeartbeats = 0;
     var analyticsHeartbeatSeconds = cfg.heartbeatSeconds || 15;
@@ -215,7 +222,7 @@ window.ImprontaPlayerExtras = function(cfg) {
         if (heartbeatContext !== cfg.sessionUrl) {
           // The old request either succeeded against the old lease or failed;
           // never leave the Legacy state machine marked in-flight. If it
-          // failed, the old frozen lote must be recreated for the new lease.
+          // succeeded, discount it once without adopting stale credentials.
           lotePendiente = null;
           vistos = Math.max(0, vistos - lote.enviados);
           latidoEnVuelo = false;
@@ -269,11 +276,8 @@ window.ImprontaPlayerExtras = function(cfg) {
         }
       }).catch(function() {
         latidoEnVuelo = false;
-        if (heartbeatContext !== cfg.sessionUrl) {
-          // The old request did not confirm. Reissue the watched delta with a
-          // fresh batch id under the renewed signed context.
-          lotePendiente = null;
-        }
+        // Even after retoken/replay, a transport failure is not proof that the
+        // server did not commit. Keep the SAME tenant-scoped billing batch ID.
         // El lote sigue pendiente: el siguiente intento reenvía el mismo.
         if (flushPendiente) {
           flushPendiente = false;

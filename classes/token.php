@@ -30,6 +30,18 @@ namespace filter_impronta;
  * Emisión, validación y autorización de los tokens del plugin.
  */
 class token {
+    /** @return string Signed instance identity, also a stable bootstrap intent. */
+    public static function playback_id(): string {
+        return 'b1' . time() . '_' . rtrim(strtr(base64_encode(random_bytes(24)), '+/', '-_'), '=');
+    }
+
+    /** @param string $id Signed instance identity. @return string Backend intent or empty for Legacy IDs. */
+    public static function bootstrap_intent(string $id): string {
+        if (preg_match('/^b1([1-9][0-9]{0,11})_([A-Za-z0-9_-]{32})$/', $id, $matches) !== 1) {
+            return '';
+        }
+        return 'bi1.' . $matches[1] . '.' . $matches[2];
+    }
     /**
      * Emite el token interno.
      *

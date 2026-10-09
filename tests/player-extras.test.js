@@ -80,6 +80,7 @@ function harness(sessionFetch, withV2 = false) {
   context.window = context;
   context.ImprontaAnalyticsV2 = (video, cfg) => {
     v2Calls.push('batch');
+    context.testConfig = cfg;
     return {setSession(id) { v2Calls.push('batch:' + id); },
       flush(reason) { v2Calls.push('flush:' + reason); }};
   };
@@ -120,8 +121,28 @@ function harness(sessionFetch, withV2 = false) {
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
   }
 
-  return {player, requests, v2Calls, listeners, windowListeners, document: context.document, advance, settle};
+  return {player, requests, v2Calls, listeners, windowListeners, document: context.document, advance, settle,
+    config: context.testConfig, context};
 }
+
+test('same-session retoken keeps the financial batch ID after an ambiguous acknowledgement', async () => {
+  let rejectFirst;
+  const h = harness(() => new Promise((resolve,reject) => { rejectFirst = reject; }),true);
+  h.config.playlistUrl = '/old-manifest';
+  h.config.sessionId = 'same-session';
+  h.player.emit('play');
+  for (let i=1;i<=6;i++) { h.player.position = i; h.player.emit('timeupdate'); }
+  h.player.emit('pause'); await h.settle();
+  const original = JSON.parse(h.requests.find(r => r.url === '/session').options.body);
+  vm.runInNewContext(fs.readFileSync(__dirname + '/../js/playback-renew.js','utf8'),h.context);
+  await h.context.ImprontaPlaybackRenew(h.config,() => Promise.resolve({samePlayback:true,
+    playlistUrl:'/renewed-manifest',eventsUrl:'/renewed-events',sessionUrl:'/renewed-session',batchUrl:'/renewed-batch',realtimeUrl:'/renewed-realtime'}))();
+  rejectFirst(new Error('lost ACK after commit')); await h.settle();
+  h.player.emit('play'); await h.advance(120000);
+  const retry = JSON.parse(h.requests.find(r => r.url === '/renewed-session').options.body);
+  assert.equal(retry.batchId,original.batchId);
+  assert.equal(retry.watchedSeconds,original.watchedSeconds);
+});
 
 test('all video learners initialize V2 without an experimental flag or extra credential request', async () => {
   const h = harness(() => Promise.resolve({ok: true, json: () => Promise.resolve({sessionId: 's1',

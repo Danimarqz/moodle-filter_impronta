@@ -138,6 +138,7 @@ if (is_array($payload)) {
     $realtime = !empty($payload['realtime']);
 }
 
+$lease = impronta_api::playback_lease($path, (int) $userid, $playbackid);
 $respuesta = impronta_api::heartbeat(
     $path,
     (int) $userid,
@@ -145,7 +146,8 @@ $respuesta = impronta_api::heartbeat(
     $watched,
     $authorizationgroupid,
     $batchid,
-    $realtime
+    $realtime,
+    (string) ($lease['mediaProof'] ?? '')
 );
 if ($respuesta === null) {
     // Perder un latido no puede parar la reproducción: el siguiente lo arregla,
@@ -170,6 +172,10 @@ if (
         'url' => (string) $respuesta['realtime']['url'],
         'token' => (string) $respuesta['realtime']['token'],
         'expiresAt' => (int) ($respuesta['realtime']['expiresAt'] ?? 0),
+        'intervalSeconds' => (int) ($respuesta['realtime']['intervalSeconds'] ?? 12),
+        'manifestExpiresAt' => (int) ($lease['manifestExpiresAt'] ?? 0),
+        'authorizedPlayback' => !empty($lease['mediaProof']),
     ];
+    impronta_api::remember_playback_lease($path, (int) $userid, $playbackid, $respuesta);
 }
 echo json_encode($output);

@@ -22,6 +22,7 @@
     var generation = 0;
     var sessionKey = String(cfg.sessionId || '');
     var state = 'disconnected';
+    var finished = false;
     var onState = typeof cfg.onRealtimeState === 'function' ? cfg.onRealtimeState : function() {};
 
     function setState(next) {
@@ -47,12 +48,20 @@
       cfg.realtimeSocketUrl = String(credentials.url);
       cfg.realtimeToken = String(credentials.token);
       cfg.realtimeExpiresAt = Number(credentials.expiresAt || 0);
+      var interval = Number(credentials.intervalSeconds || cfg.realtimeIntervalSeconds || 12);
+      cfg.realtimeIntervalSeconds = isFinite(interval) ? Math.max(12, Math.min(300, interval)) : 12;
+      if (typeof credentials.authorizedPlayback === 'boolean') { cfg.authorizedPlayback = credentials.authorizedPlayback; }
+      if (Number(credentials.manifestExpiresAt) > 0) { cfg.fragmentLeaseExpiresAt = Number(credentials.manifestExpiresAt); }
+      if (heartbeatTimer) {
+        clearHeartbeat();
+        heartbeatTimer = root.setInterval(sendHeartbeat, cfg.realtimeIntervalSeconds * 1000);
+      }
       clearTokenRefresh();
       return true;
     }
 
     function isPlaying() {
-      try { return !player.paused(); } catch (e) { return false; }
+      try { return !finished && !player.paused() && !(typeof player.ended === 'function' && player.ended()); } catch (e) { return false; }
     }
 
     function sendHeartbeat() {
@@ -98,7 +107,7 @@
         setState('connected');
         sendHeartbeat();
         clearHeartbeat();
-        heartbeatTimer = root.setInterval(sendHeartbeat, 12000);
+        heartbeatTimer = root.setInterval(sendHeartbeat, (cfg.realtimeIntervalSeconds || 12) * 1000);
       };
       candidate.onclose = function() {
         if (openGeneration !== generation || socket !== candidate) { return; }
@@ -112,9 +121,7 @@
     }
 
     function open() {
-      if (!active || destroyed || connecting || !isPlaying() || !cfg.sessionId ||
-          !cfg.realtimeSocketUrl || !cfg.realtimeToken ||
-          cfg.realtimeExpiresAt <= Math.floor(Date.now() / 1000) + 60) {
+      if (!active || destroyed || connecting || !isPlaying()) {
         return;
       }
       connecting = true;
@@ -122,12 +129,24 @@
       clearReconnect();
       setState(reconnectAttempt ? 'reconnecting' : 'disconnected');
       Promise.resolve().then(function() {
-        return {url: cfg.realtimeSocketUrl, token: cfg.realtimeToken, expiresAt: cfg.realtimeExpiresAt};
-      }).then(function(credentials) {
-        if (credentials.sessionId && String(credentials.sessionId) !== String(cfg.sessionId || '')) {
-          setSession(String(credentials.sessionId), credentials);
-          return;
+        if (cfg.sessionId && cfg.realtimeSocketUrl && cfg.realtimeToken &&
+            cfg.realtimeExpiresAt > Math.floor(Date.now() / 1000) + 60) {
+          return {url: cfg.realtimeSocketUrl, token: cfg.realtimeToken, expiresAt: cfg.realtimeExpiresAt,
+            intervalSeconds: cfg.realtimeIntervalSeconds};
         }
+        if (typeof root.fetch !== 'function' || !cfg.realtimeUrl) { throw new Error('realtime unavailable'); }
+        // The plugin returns cached bootstrap credentials. No second CloudFront
+        // API request is needed on the authorized path, and no Legacy wait.
+        return root.fetch(cfg.realtimeUrl, {credentials: 'same-origin', cache: 'no-store'})
+          .then(function(res) { if (!res || !res.ok) { throw new Error('realtime credentials'); } return res.json(); });
+      }).then(function(credentials) {
+        if (openGeneration !== generation || destroyed || !active) { return; }
+        if (credentials.sessionId && String(credentials.sessionId) !== String(cfg.sessionId || '')) {
+          if (sessionKey) { setSession(String(credentials.sessionId), credentials); return; }
+          cfg.sessionId = sessionKey = String(credentials.sessionId);
+          if (typeof cfg.onRealtimeSession === 'function') { cfg.onRealtimeSession(sessionKey); }
+        }
+        if (!cfg.sessionId) { throw new Error('realtime session'); }
         connect(credentials, openGeneration);
       }).catch(function() {
         if (openGeneration !== generation) { return; }
@@ -178,6 +197,7 @@
       stop();
       cfg.sessionId = sessionId;
       sessionKey = sessionId;
+      finished = false;
       cfg.realtimeSocketUrl = '';
       cfg.realtimeToken = '';
       cfg.realtimeExpiresAt = 0;
@@ -199,27 +219,28 @@
       cfg.realtimeUrl = nextUrl;
       cfg.sessionId = nextSession;
       sessionKey = nextSession;
+      finished = false;
       cfg.realtimeSocketUrl = '';
       cfg.realtimeToken = '';
       cfg.realtimeExpiresAt = 0;
       reconnectAttempt = 0;
-      if (wasActive && nextSession) { start(); }
+      // A manifest renewal calls this before the new source has loaded. Let
+      // the next play open credentials, never race the old cached manifest.
     }
 
     if (cfg.enabled !== false && cfg.realtimeUrl) {
       player.on('play', start);
-      // The server session id arrives on the first Legacy heartbeat. This
-      // hook starts WSS as soon as that id becomes available without changing
-      // the Legacy cadence.
+      player.on('seeked', function() { if (active && isPlaying()) { start(); } });
+      // Open directly on play; retries own their backoff window.
       player.on('timeupdate', function() {
         // A scheduled reconnect owns the backoff window. Do not let the
         // player's frequent timeupdate events cancel it and open eagerly.
-        if (active && !socket && !reconnectTimer && !connecting && cfg.sessionId) { open(); }
+        if (active && !socket && !reconnectTimer && !connecting) { open(); }
       });
       // Once the video has ended there is no active playback state to report.
       // Closing here also invalidates the reconnect generation, so a socket
       // that drops at the end cannot start another connection.
-      player.on('ended', stop);
+      player.on('ended', function() { finished = true; stop(); });
       player.on('dispose', function() { destroyed = true; stop(); });
     }
 

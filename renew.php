@@ -31,7 +31,8 @@ header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 try {
     $url = required_param('url', PARAM_RAW);
-    echo json_encode(\filter_impronta\renewal::issue($url, (int) $USER->id, false));
+    $newplayback = optional_param('newplayback', false, PARAM_BOOL);
+    echo json_encode(\filter_impronta\renewal::issue($url, (int) $USER->id, false, $newplayback));
 } catch (\Throwable $e) {
     http_response_code(403);
     echo json_encode(['error' => 'renewal denied']);

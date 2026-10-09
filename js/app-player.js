@@ -417,7 +417,7 @@
     return loadScript(CFG.renewjs || CFG.videojs).then(function() {
       if (window.ImprontaPlaybackRenew && CFG.renew) {
         var renew = window.ImprontaPlaybackRenew(cfg, CFG.renew);
-        cfg.renew = function() { return renew().then(function() {
+        cfg.renew = function(options) { return renew(options).then(function() {
           cfg.playlist = cfg.playlistUrl;
           cfg.events = cfg.eventsUrl;
           cfg.session = cfg.sessionUrl;
@@ -512,14 +512,20 @@
         if (cfg.realtimeUrl && typeof ImprontaRealtimeV2 === 'function') {
           try { realtimeV2 = ImprontaRealtimeV2(player, cfg); } catch (e) {}
         }
+        cfg.onRealtimeSession = function(sessionId) {
+          if (analyticsV2 && typeof analyticsV2.setSession === 'function') { analyticsV2.setSession(sessionId); }
+        };
         cfg.onPlaybackRenewed = function(fresh) {
+          var sameSession = fresh.samePlayback ? String(cfg.sessionId || '') : '';
           if (analyticsV2 && typeof analyticsV2.setContext === 'function') {
-            analyticsV2.setContext({batchUrl: fresh.batchUrl, sessionId: ''});
+            analyticsV2.setContext({batchUrl: fresh.batchUrl, sessionId: sameSession});
           }
           if (realtimeV2 && typeof realtimeV2.setContext === 'function') {
-            realtimeV2.setContext({realtimeUrl: fresh.realtimeUrl, sessionId: ''});
+            realtimeV2.setContext({realtimeUrl: fresh.realtimeUrl, sessionId: sameSession});
           }
         };
+        cfg.beforeAuthorizedReload = function() { if (realtimeV2) { realtimeV2.stop(); } };
+        if (cfg.renew && window.ImprontaAuthorizedLifecycle) { window.ImprontaAuthorizedLifecycle(player, cfg, cfg.renew); }
         analytics(player, cfg);
         sesion(player, cfg, el, analyticsV2, realtimeV2);
       }).catch(function() {

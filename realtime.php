@@ -84,11 +84,25 @@ $sessionid = impronta_api::recall_session($path, $effectiveuserid, $playbackid);
 if ($sessionid === '') {
     impronta_realtime_fail(409);
 }
-$response = impronta_api::realtime($path, $effectiveuserid, $sessionid, $authorizationgroupid);
+$lease = impronta_api::playback_lease($path, $effectiveuserid, $playbackid);
+if (($lease['sessionId'] ?? '') !== $sessionid) {
+    $lease = [];
+}
+$response = $lease['realtime'] ?? null;
+if (!is_array($response) || (int) ($response['expiresAt'] ?? 0) <= time() + 60) {
+    $response = impronta_api::realtime(
+        $path, $effectiveuserid, $sessionid, $authorizationgroupid,
+        (string) ($lease['mediaProof'] ?? '')
+    );
+}
 if ($response === null || empty($response['url']) || empty($response['token'])) {
     impronta_realtime_fail(502);
 }
 $response['sessionId'] = $sessionid;
+impronta_api::remember_playback_lease($path, $effectiveuserid, $playbackid, ['sessionId' => $sessionid, 'realtime' => $response]);
+$response['manifestExpiresAt'] = (int) ($lease['manifestExpiresAt'] ?? 0);
+$response['authorizedPlayback'] = !empty($lease['mediaProof']);
+unset($response['mediaProof']);
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 echo json_encode($response);

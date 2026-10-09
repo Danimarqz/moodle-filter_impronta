@@ -197,7 +197,7 @@ if ($vttlang !== null) {
 /* --------------------------------------------------------------------- */
 
 $reason = null;
-$sesion = impronta_api::playlist($path, $reason, (int) $userid, $authorizationgroupid);
+$sesion = impronta_api::playlist($path, $reason, (int) $userid, $authorizationgroupid, $playbackid);
 if ($sesion === null) {
     $message = $reason === 'denied'
         ? get_string('servicedenied', 'filter_impronta')
@@ -223,5 +223,6 @@ header('Cache-Control: no-store');
 // ajena.
 if (!empty($sesion['sessionId'])) {
     impronta_api::remember_session($path, (int) $userid, (string) $sesion['sessionId'], $playbackid);
+    impronta_api::remember_playback_lease($path, (int) $userid, $playbackid, $sesion);
 }
 echo $sesion['playlist'];

@@ -91,10 +91,10 @@ class mobile {
 (function() {
   var sites = this.CoreSitesProvider;
   window.improntaApp = {$cfg};
-  window.improntaApp.renew = function(url) {
+  window.improntaApp.renew = function(url, options) {
     var site = sites.getCurrentSite();
     if (!site) { return Promise.reject(new Error('No Moodle site')); }
-    return site.read('filter_impronta_renew', {url: url},
+    return site.read('filter_impronta_renew', {url: url, newplayback: !!(options && options.newPlayback)},
       {getFromCache: false, saveToCache: false, emergencyCache: false});
   };
   var a = document.createElement('script');
