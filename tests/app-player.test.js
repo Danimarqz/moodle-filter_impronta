@@ -6,7 +6,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(__dirname + '/../js/app-player.js', 'utf8');
 
-function harness(firstResponse, withV2 = false, subsequentResponse) {
+function harness(firstResponse, withV2 = false, subsequentResponse, options = {}) {
   let now = 0;
   let nextTimer = 1;
   let player;
@@ -51,11 +51,14 @@ function harness(firstResponse, withV2 = false, subsequentResponse) {
       if (documentListeners[type] === handler) delete documentListeners[type];
     }
   };
+  if (options.playlist) element.attrs['data-impronta-playlist'] = options.playlist;
   if (withV2) {
     element.attrs['data-impronta-batch'] = '/batch';
     element.attrs['data-impronta-realtime'] = '/realtime';
   }
   let videojsOptions;
+  const renewals = [];
+  const sources = [];
   const context = {
     window: {
       improntaApp: {wwwroot: '', componente: 'impronta', videojscss: '/video.css', videojs: '/video.js'},
@@ -78,8 +81,9 @@ function harness(firstResponse, withV2 = false, subsequentResponse) {
       return id;
     },
     clearInterval(id) { timers.delete(id); },
-    fetch(url, options) {
-      requests.push({url, options});
+    fetch(url, requestOptions) {
+      requests.push({url, options: requestOptions});
+      if (options.transport) return options.transport(url, requestOptions);
       if (url === '/session' && requests.filter((r) => r.url === '/session').length === 1) {
         return firstResponse;
       }
@@ -102,11 +106,32 @@ function harness(firstResponse, withV2 = false, subsequentResponse) {
     return {setSession(id) { v2Calls.push('wss:' + id); }, setCredentials() {}};
   };
   context.window.ImprontaWatermarkFit = context.ImprontaWatermarkFit;
+  if (options.renew) {
+    context.window.improntaApp.renewjs = '/renew.js';
+    context.window.improntaApp.renew = (url, opts) => {
+      renewals.push({url, options: opts});
+      return options.renew(url, opts);
+    };
+    vm.runInNewContext(fs.readFileSync(__dirname + '/../js/playback-renew.js', 'utf8'), context);
+  }
+  if (options.realV2) {
+    for (const name of ['fetch', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval']) {
+      context.window[name] = context[name];
+    }
+    context.window.document = document;
+    context.window.WebSocket = function() { this.readyState = 0; this.close = function() {}; };
+    for (const name of ['analytics-v2', 'realtime-v2']) {
+      vm.runInNewContext(fs.readFileSync(__dirname + '/../js/' + name + '.js', 'utf8'), context);
+    }
+    context.ImprontaAnalyticsV2 = context.window.ImprontaAnalyticsV2;
+    context.ImprontaRealtimeV2 = context.window.ImprontaRealtimeV2;
+  }
   player = {
     handlers: {},
     playing: false,
     position: 0,
     on(type, handler) { (this.handlers[type] ||= []).push(handler); },
+    off(type, handler) { this.handlers[type] = (this.handlers[type] || []).filter(x => x !== handler); },
     one(type, handler) { this.on(type, handler); },
     emit(type) {
       if (type === 'play') this.playing = true;
@@ -114,6 +139,8 @@ function harness(firstResponse, withV2 = false, subsequentResponse) {
       for (const handler of this.handlers[type] || []) handler();
     },
     paused() { return !this.playing; },
+    play() { this.emit('play'); return Promise.resolve(); },
+    src(source) { sources.push(source); this.emit('loadedmetadata'); },
     currentTime() { return this.position; },
     el() { return {querySelector() { return null; }}; },
     pause() { this.playing = false; },
@@ -138,8 +165,78 @@ function harness(firstResponse, withV2 = false, subsequentResponse) {
   async function settle() {
     for (let i = 0; i < 20; i += 1) await Promise.resolve();
   }
-  return {player, requests, v2Calls, windowListeners, videojsOptions: () => videojsOptions, advance, settle};
+  return {player, requests, renewals, sources, v2Calls, windowListeners, documentListeners, videojsOptions: () => videojsOptions, advance, settle};
 }
+
+test('cached app markup starts a new intent only on Play, before loading media or telemetry', async () => {
+  const h = harness(Promise.resolve({ok: true, json: () => Promise.resolve({})}), true, undefined, {
+    renew: async () => ({playlistUrl: '/fresh/playlist.m3u8', eventsUrl: '/fresh/events',
+      sessionUrl: '/fresh/session', batchUrl: '/fresh/batch', realtimeUrl: '/fresh/realtime', samePlayback: false})
+  });
+  await h.settle();
+  assert.equal(h.renewals.length, 0, 'mounting unused videos must not allocate sessions');
+  assert.ok(!h.videojsOptions().sources?.length, 'cached media must not be installed before the new intent');
+  await h.player.play();
+  await h.settle();
+  assert.equal(h.renewals.length, 1);
+  assert.equal(h.renewals[0].options.newPlayback, true);
+  assert.equal(h.sources[0].src, '/fresh/playlist.m3u8');
+  h.player.emit('pause');
+  await h.player.play();
+  await h.settle();
+  assert.equal(h.renewals.length, 1, 'pause/resume must preserve this instance identity');
+});
+
+test('foreground does not renew expired cached markup of an unused player', async () => {
+  const h = harness(undefined, true, undefined, {playlist: '/playlist.m3u8?e=1',
+    renew: async () => ({playlistUrl: '/fresh/playlist.m3u8', eventsUrl: '/fresh/events',
+      sessionUrl: '/fresh/session', batchUrl: '/fresh/batch', realtimeUrl: '/fresh/realtime', samePlayback: true})});
+  await h.settle();
+  h.documentListeners.visibilitychange();
+  await h.settle();
+  assert.equal(h.renewals.length, 0);
+  assert.deepEqual(h.sources, []);
+  assert.equal(h.player.paused(), true);
+});
+
+test('two instances restored from identical markup submit sequence 1 under different server sessions', async () => {
+  // The transport models the existing conditional receipt key, not the player:
+  // an already accepted (session, sequence) cannot accept a different batchId.
+  const receipts = new Map([['cached-session:1', 'previously-accepted']]);
+  const accepted = [];
+  const fresh = name => ({playlistUrl: '/' + name + '/playlist.m3u8', eventsUrl: '/' + name + '/events',
+    sessionUrl: '/' + name + '/session', batchUrl: '/' + name + '/batch', realtimeUrl: '/' + name + '/realtime', samePlayback: false});
+  for (const name of ['first', 'second']) {
+    const h = harness(undefined, true, undefined, {realV2: true, renew: async () => fresh(name),
+      transport: async (url, opts) => {
+        if (url.endsWith('/realtime')) {
+          const sessionId = url === '/realtime' ? 'cached-session' : name + '-session';
+          return {ok: true, json: async () => ({sessionId, url: 'wss://test.invalid/wss', token: 'synthetic', expiresAt: 9999999999})};
+        }
+        if (url.endsWith('/batch')) {
+          const batch = JSON.parse(opts.body);
+          const key = batch.sessionId + ':' + batch.sequence;
+          if (receipts.has(key) && receipts.get(key) !== batch.batchId) return {ok: false, status: 409};
+          receipts.set(key, batch.batchId);
+          accepted.push({url, session: batch.sessionId, sequence: batch.sequence});
+        }
+        return {ok: true, json: async () => ({})};
+      }});
+    await h.settle();
+    await h.player.play();
+    await h.settle();
+    h.player.position = 1;
+    h.player.emit('timeupdate');
+    h.player.emit('pause');
+    await h.settle();
+    h.player.dispose();
+  }
+  assert.deepEqual(accepted, [
+    {url: '/first/batch', session: 'first-session', sequence: 1},
+    {url: '/second/batch', session: 'second-session', sequence: 1}
+  ]);
+  assert.equal(receipts.get('cached-session:1'), 'previously-accepted');
+});
 
 test('app video learners initialize WSS and batches without pilot attributes', async () => {
   const h = harness(Promise.resolve({ok: true, json: () => Promise.resolve({sessionId: 's1',

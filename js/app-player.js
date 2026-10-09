@@ -298,7 +298,11 @@
       limpiarTimer();
       flush();
     });
-    player.on('error', function() { flush(); recargar(); });
+    player.on('error', function() {
+      if (!iniciada || destruida) { return; }
+      flush();
+      recargar();
+    });
 
     // --- Vídeo colgado ----------------------------------------------------
     // http-streaming reintenta los segmentos por debajo y no siempre llega a
@@ -340,6 +344,9 @@
     }
 
     function refreshIfExpired() {
+      // Cached markup is not a started playback. Foreground must not bypass
+      // the first explicit Play or revive a player belonging to another view.
+      if (!iniciada || destruida) { return; }
       var match = /[?&]e=(\d+)/.exec(cfg.playlistUrl || '');
       if (match && Number(match[1]) * 1000 < Date.now() + 60000 && !recuperado) { recargar(); }
     }
@@ -417,15 +424,12 @@
     return loadScript(CFG.renewjs || CFG.videojs).then(function() {
       if (window.ImprontaPlaybackRenew && CFG.renew) {
         var renew = window.ImprontaPlaybackRenew(cfg, CFG.renew);
-        cfg.renew = function(options) { return renew(options).then(function() {
+        cfg.renew = function(options) { return renew(options).then(function(fresh) {
           cfg.playlist = cfg.playlistUrl;
           cfg.events = cfg.eventsUrl;
           cfg.session = cfg.sessionUrl;
+          return fresh;
         }); };
-      }
-      var match = /[?&]e=(\d+)/.exec(cfg.playlistUrl || '');
-      if (match && Number(match[1]) * 1000 < Date.now() + 60000 && cfg.renew) {
-        return cfg.renew();
       }
     }).then(function() {
       return loadScript(CFG.videojs);
@@ -442,15 +446,23 @@
       el.textContent = '';
       el.appendChild(video);
 
+      var freshStart = cfg.renew && typeof window.ImprontaPlaybackStart === 'function';
       var player = videojs(video, {
         fluid: true,
         playsinline: true,
         poster: cfg.poster || undefined,
         'vtt.js': CFG.vttjs,
-        sources: [{src: cfg.playlistUrl, type: 'application/x-mpegURL'}]
+        sources: freshStart ? [] : [{src: cfg.playlistUrl, type: 'application/x-mpegURL'}]
       });
       var analyticsV2 = null;
       var realtimeV2 = null;
+      var readyResolve;
+      var readyReject;
+      var ready = new Promise(function(resolve, reject) { readyResolve = resolve; readyReject = reject; });
+      // An unused player may be disposed before anyone calls Play.
+      ready.catch(function() {});
+      if (freshStart) { window.ImprontaPlaybackStart(player, cfg, cfg.renew, ready); }
+      player.on('dispose', function() { readyReject(new Error('playback disposed')); });
 
       // Conserva el punto de reproducción al cerrar y volver a abrir la app.
       var positionKey = 'impronta:position:' + cfg.subject + ':' + cfg.path;
@@ -528,7 +540,9 @@
         if (cfg.renew && window.ImprontaAuthorizedLifecycle) { window.ImprontaAuthorizedLifecycle(player, cfg, cfg.renew); }
         analytics(player, cfg);
         sesion(player, cfg, el, analyticsV2, realtimeV2);
+        readyResolve();
       }).catch(function() {
+        readyReject(new Error('watermark unavailable'));
         // Sin watermark no se reproduce: identificar al alumno es el motivo
         // de que exista este reproductor.
         try { player.pause(); } catch (e) {}
