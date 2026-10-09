@@ -229,7 +229,13 @@
     }
 
     if (cfg.enabled !== false && cfg.realtimeUrl) {
-      player.on('play', start);
+      player.on('play', function() {
+        // Legacy replays reuse their playback context. Resume presence only on
+        // an explicit play; ended/timeupdate must remain silent. Authorized
+        // replays keep the ended guard until renewal installs a NEW context.
+        if (finished && !cfg.authorizedPlayback) { finished = false; }
+        start();
+      });
       player.on('seeked', function() { if (active && isPlaying()) { start(); } });
       // Open directly on play; retries own their backoff window.
       player.on('timeupdate', function() {

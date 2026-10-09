@@ -14,10 +14,12 @@ function playbackHarness(overrides = {}, fetchImpl) {
   let nextTimer = 1;
   const player = {
     playing: true,
+    completed: false,
     handlers: {},
     on(type, handler) { (this.handlers[type] ||= []).push(handler); },
     emit(type) { for (const handler of this.handlers[type] || []) handler(); },
     paused() { return !this.playing; },
+    ended() { return this.completed; },
     currentTime() { return 20; },
     bufferedEnd() { return 80; },
   };
@@ -228,6 +230,67 @@ test('closes WSS at ended and does not keep the heartbeat interval alive', async
   player.emit('ended');
   assert.equal(closeCount, 1);
   assert.equal(client.state(), 'disconnected');
+});
+
+test('Legacy replay after ended opens WSS again without changing its billing session', async () => {
+  const h = playbackHarness({authorizedPlayback: false});
+  await h.open();
+  h.player.playing = false;
+  h.player.completed = true;
+  h.player.emit('ended');
+  assert.equal(h.intervals.size, 0);
+  assert.equal(h.timeouts.size, 0);
+  h.player.emit('timeupdate');
+  await h.settle();
+  assert.equal(h.sockets.length, 1, 'ended alone must not reconnect');
+
+  h.player.playing = true;
+  h.player.completed = false;
+  h.player.emit('play');
+  await h.settle();
+  assert.equal(h.sockets.length, 2, 'explicit Legacy replay must reopen WSS');
+  h.sockets[1].readyState = 1;
+  h.sockets[1].onopen();
+  assert.equal(h.sent.length, 2);
+  assert.equal(h.sent[1].sessionId, 's1', 'presence must not mutate Legacy accounting identity');
+  assert.equal(h.sent[1].playing, true);
+});
+
+test('authorized replay remains silent until a new playback context is installed', async () => {
+  const h = playbackHarness({authorizedPlayback: true});
+  await h.open();
+  h.player.playing = false;
+  h.player.completed = true;
+  h.player.emit('ended');
+  h.player.playing = true;
+  h.player.completed = false;
+  h.player.emit('play');
+  for (let i = 0; i < 50; i++) h.player.emit('timeupdate');
+  await h.settle();
+  assert.equal(h.sockets.length, 1, 'old authorized session must stay closed');
+  assert.equal(h.sent.length, 1);
+
+  h.client.setContext({sessionId: 's2', realtimeUrl: '/realtime/new'});
+  h.client.setCredentials({url: 'wss://example/ws', token: 'new-signed', expiresAt: 9999999999, authorizedPlayback: true});
+  h.player.emit('play');
+  await h.settle();
+  assert.equal(h.sockets.length, 2);
+  h.sockets[1].readyState = 1;
+  h.sockets[1].onopen();
+  assert.equal(h.sent[1].sessionId, 's2');
+});
+
+test('disposed Legacy player cannot reopen WSS after ended or a late play', async () => {
+  const h = playbackHarness({authorizedPlayback: false});
+  await h.open();
+  h.player.emit('ended');
+  h.player.emit('dispose');
+  h.player.emit('play');
+  await h.settle();
+  assert.equal(h.sockets.length, 1);
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.intervals.size, 0);
+  assert.equal(h.timeouts.size, 0);
 });
 
 test('does not throw or create transport when disabled', () => {
