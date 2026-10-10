@@ -26,6 +26,7 @@ namespace {
     $root = __DIR__ . '/../classes/';
     require $root . 'config.php';
     require $root . 'token.php';
+    require $root . 'playback_store.php';
     require $root . 'impronta_api.php';
     require $root . 'renewal.php';
     $path = 'synthetic/class'; $userid = 7; $courseid = 11;

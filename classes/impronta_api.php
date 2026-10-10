@@ -29,6 +29,8 @@
 
 namespace filter_impronta;
 
+// A rolling hotfix can precede Moodle's rebuild of its cached class map.
+require_once(__DIR__ . '/playback_store.php');
 
 /**
  * Firmas de CloudFront y analítica, pedidas a Impronta con el apikey del tenant.
@@ -398,7 +400,7 @@ class impronta_api {
         if ($key === '' || $playbackid === '') {
             return [];
         }
-        $cache = \cache::make_from_params(\cache_store::MODE_APPLICATION, 'filter_impronta', 'sessions');
+        $cache = playback_store::make(7 * DAYSECS);
         $value = $cache->get('lease_' . $key);
         return is_array($value) && time() - (int) ($value['at'] ?? 0) <= 7 * DAYSECS ? $value : [];
     }
@@ -436,7 +438,7 @@ class impronta_api {
             'manifestExpiresAt' => (int) ($authorized['expires_at'] ?? $old['manifestExpiresAt'] ?? 0),
             'realtime' => $rt ?: ($old['realtime'] ?? []),
         ];
-        $cache = \cache::make_from_params(\cache_store::MODE_APPLICATION, 'filter_impronta', 'sessions');
+        $cache = playback_store::make(7 * DAYSECS);
         $cache->set('lease_' . $key, $lease);
     }
 
@@ -463,7 +465,7 @@ class impronta_api {
         if ($key === '' || $sessionid === '') {
             return;
         }
-        $cache = \cache::make_from_params(\cache_store::MODE_APPLICATION, 'filter_impronta', 'sessions');
+        $cache = playback_store::make();
         $now = time();
         $stored = $cache->get($key);
         $ids = [];
@@ -496,7 +498,7 @@ class impronta_api {
         if ($key === '') {
             return '';
         }
-        $cache = \cache::make_from_params(\cache_store::MODE_APPLICATION, 'filter_impronta', 'sessions');
+        $cache = playback_store::make();
         $stored = $cache->get($key);
         if (!is_array($stored) || empty($stored['id'])) {
             return '';
@@ -526,7 +528,7 @@ class impronta_api {
         if ($key === '' || $sessionid === '') {
             return false;
         }
-        $cache = \cache::make_from_params(\cache_store::MODE_APPLICATION, 'filter_impronta', 'sessions');
+        $cache = playback_store::make();
         $stored = $cache->get($key);
         if (!is_array($stored) || time() - (int) ($stored['at'] ?? 0) > self::SESSION_MEMORY) {
             return false;
@@ -564,7 +566,7 @@ class impronta_api {
             return;
         }
         $key = 'batch-' . sha1($subject . '|' . $path . '|' . $playbackid . '|' . $batchid);
-        $cache = \cache::make_from_params(\cache_store::MODE_APPLICATION, 'filter_impronta', 'sessions');
+        $cache = playback_store::make();
         $cache->set($key, ['id' => $sessionid, 'at' => time()]);
     }
 
@@ -583,7 +585,7 @@ class impronta_api {
             return '';
         }
         $key = 'batch-' . sha1($subject . '|' . $path . '|' . $playbackid . '|' . $batchid);
-        $cache = \cache::make_from_params(\cache_store::MODE_APPLICATION, 'filter_impronta', 'sessions');
+        $cache = playback_store::make();
         $stored = $cache->get($key);
         if (!is_array($stored) || empty($stored['id']) || time() - (int) ($stored['at'] ?? 0) > self::SESSION_MEMORY) {
             return '';
