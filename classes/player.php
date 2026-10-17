@@ -279,6 +279,7 @@ class player {
             $realtimev2js = self::asset_url('js/realtime-v2.js');
             $extrasjs = self::asset_url('js/player-extras.js');
             $renewjs = self::asset_url('js/playback-renew.js');
+            $diagnosticsjs = self::asset_url('js/playback-diagnostics.js');
             $assets = <<<HTML
 <link href="{$vjscss}" rel="stylesheet" />
 <style>
@@ -297,6 +298,7 @@ class player {
 <script src="{$analyticsv2js}"></script>
 <script src="{$realtimev2js}"></script>
 <script src="{$renewjs}"></script>
+<script src="{$diagnosticsjs}"></script>
 <script src="{$extrasjs}"></script>
 HTML;
         }
@@ -495,6 +497,8 @@ HTML;
                 $mode
             ),
             'subject' => impronta_api::subject($tokenuserid),
+            'diagnostic' => $isaudio ? '' : diagnostics::url($filename, $token, $expires, $courseid,
+                $tokenuserid, $authorizationgroupid, $playbackid, $mode),
             'path' => $filename,
             'poster' => $isaudio ? '' : self::poster_url($filename),
             // El logo por si el thumb del poster da 404: js/app-player.js
@@ -709,6 +713,8 @@ HTML;
 
         $cfg = [
             'targetId' => $escapedid,
+            'diagnosticUrl' => diagnostics::url($filename, $token, $expires, $courseid,
+                $userid, $authorizationgroupid, $playbackid, $mode),
             'watermarkLabel' => $watermarkuser ? watermark::label($watermarkuser) : '',
             'eventsUrl' => token::endpoint_url(
                 'events.php',

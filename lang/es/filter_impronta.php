@@ -108,3 +108,10 @@ $string['privacy:metadata:impronta:eventclient'] = 'Se envía el tipo de cliente
 $string['privacy:metadata:impronta:eventflushreason'] = 'Se envía el motivo del vaciado del lote para analítica y diagnóstico operativo.';
 $string['privacy:metadata:impronta:watchedseconds'] = 'Se envía la duración vista en segundos con los latidos para analítica y facturación.';
 $string['privacy:metadata:impronta:batchid'] = 'Se envía el identificador opcional del lote de latidos para deduplicar la contabilización.';
+
+// Playback diagnostic settings and event.
+$string['diagnosticsheading'] = 'Depuración de reproducción';
+$string['diagnosticsdesc'] = 'Guarda información sobre interrupciones de los alumnos seleccionados en los registros de Moodle. No cambia la reproducción ni los totales de consumo.';
+$string['debugusers'] = 'IDs de usuarios Moodle para guardar debugging';
+$string['debugusersdesc'] = 'IDs numéricos de Moodle separados por comas, espacios o saltos de línea. Por ejemplo: 1989, 1327. Vacío desactiva la captura para todos. La captura sigue activa hasta que retires los IDs, sin desactivación automática. Los alumnos deben recargar la página del curso después de activarla. Se registran posición, rangos de buffer, velocidad, códigos de error y métricas de peticiones, sin tokens ni URLs firmadas. Busca el evento «Diagnóstico de reproducción registrado» en los registros de Moodle. Se aplica la retención habitual de esos registros y un máximo de seis informes por alumno y minuto.';
+$string['playbackdiagnostic'] = 'Diagnóstico de reproducción registrado';

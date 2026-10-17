@@ -10,6 +10,7 @@ window.ImprontaPlaybackRenew = function(cfg, request) {
       return pending;
     }
     pendingReplay = replay;
+    if (cfg.diagnostics) { cfg.diagnostics.record('renew_start'); }
     pending = Promise.resolve().then(function() { return request(cfg.playlistUrl, options || {}); }).then(function(fresh) {
       if (!fresh || !fresh.playlistUrl || !fresh.eventsUrl || !fresh.sessionUrl
           || !fresh.batchUrl || !fresh.realtimeUrl || (replay && fresh.samePlayback)) {
@@ -20,12 +21,15 @@ window.ImprontaPlaybackRenew = function(cfg, request) {
       cfg.sessionUrl = fresh.sessionUrl;
       cfg.batchUrl = fresh.batchUrl;
       cfg.realtimeUrl = fresh.realtimeUrl;
+      if (typeof fresh.diagnosticUrl === 'string') { cfg.diagnosticUrl = fresh.diagnosticUrl; }
+      if (cfg.diagnostics) { cfg.diagnostics.record('renew_ok'); }
       if (typeof cfg.onPlaybackRenewed === 'function') {
         cfg.onPlaybackRenewed(fresh);
       }
       return fresh;
     }).then(function(value) { pending = null; return value; }, function(error) {
       pending = null;
+      if (cfg.diagnostics) { cfg.diagnostics.record('renew_error'); }
       throw error;
     });
     return pending;
@@ -184,6 +188,7 @@ window.ImprontaAuthorizedLifecycle = function(player, cfg, renew) {
       if (replay) { try { player.pause(); } catch (e) {} }
       return;
     }
+    if (cfg.diagnostics) { cfg.diagnostics.record(replay ? 'recovery_replay' : 'recovery_expiry'); cfg.diagnostics.report('recovery'); }
     pending = true;
     var currentCycle = ++cycle;
     var position = replay ? 0 : Number(player.currentTime() || 0);

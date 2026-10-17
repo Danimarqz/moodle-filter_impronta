@@ -301,7 +301,7 @@
     player.on('error', function() {
       if (!iniciada || destruida) { return; }
       flush();
-      recargar();
+      recargar('error');
     });
 
     // --- Vídeo colgado ----------------------------------------------------
@@ -317,9 +317,10 @@
     var recuperado = false;
     var renovando = false;
 
-    function recargar() {
+    function recargar(reason) {
       if (!cfg.renew) { try { player.pause(); } catch (e) {} return; }
       if (renovando) { return; }
+      if (cfg.diagnostics) { cfg.diagnostics.record('recovery_' + reason); cfg.diagnostics.report('recovery'); }
       if (recuperado) {
         try { player.pause(); } catch (e) {}
         return;
@@ -348,7 +349,7 @@
       // the first explicit Play or revive a player belonging to another view.
       if (!iniciada || destruida) { return; }
       var match = /[?&]e=(\d+)/.exec(cfg.playlistUrl || '');
-      if (match && Number(match[1]) * 1000 < Date.now() + 60000 && !recuperado) { recargar(); }
+      if (match && Number(match[1]) * 1000 < Date.now() + 60000 && !recuperado) { recargar('expiry'); }
     }
     player.on('play', refreshIfExpired);
 
@@ -361,7 +362,7 @@
         var t = player.currentTime() || 0;
         if (t !== ultimoProgreso) { atascado = 0; ultimoProgreso = t; return; }
         atascado += 5;
-        if (atascado >= 25) { atascado = 0; recargar(); }
+        if (atascado >= 25) { atascado = 0; recargar('stall'); }
       } catch (e) { atascado = 0; }
     }, 5000);
 
@@ -408,6 +409,7 @@
       evicted: el.getAttribute('data-impronta-evicted'),
       expired: el.getAttribute('data-impronta-expired')
     };
+    cfg.diagnosticUrl = el.getAttribute('data-impronta-diagnostic') || '';
     cfg.playlistUrl = cfg.playlist;
     if (!cfg.playlist) { return; }
     return build(el, cfg);
@@ -434,6 +436,10 @@
     }).then(function() {
       return loadScript(CFG.videojs);
     }).then(function() {
+      if (CFG.diagnosticsjs) {
+        return loadScript(CFG.diagnosticsjs).catch(function() {});
+      }
+    }).then(function() {
       var video = document.createElement('video');
       video.className = 'video-js vjs-default-skin vjs-fluid';
       video.setAttribute('controls', '');
@@ -456,6 +462,9 @@
       });
       var analyticsV2 = null;
       var realtimeV2 = null;
+      if (window.ImprontaPlaybackDiagnostics) {
+        try { cfg.diagnostics = window.ImprontaPlaybackDiagnostics(player, cfg); } catch (e) {}
+      }
       var readyResolve;
       var readyReject;
       var ready = new Promise(function(resolve, reject) { readyResolve = resolve; readyReject = reject; });
@@ -528,6 +537,9 @@
           if (analyticsV2 && typeof analyticsV2.setSession === 'function') { analyticsV2.setSession(sessionId); }
         };
         cfg.onPlaybackRenewed = function(fresh) {
+          if (cfg.diagnosticUrl && (!cfg.diagnostics || !cfg.diagnostics.enabled) && window.ImprontaPlaybackDiagnostics) {
+            try { cfg.diagnostics = window.ImprontaPlaybackDiagnostics(player, cfg); } catch (e) {}
+          }
           var sameSession = fresh.samePlayback ? String(cfg.sessionId || '') : '';
           if (analyticsV2 && typeof analyticsV2.setContext === 'function') {
             analyticsV2.setContext({batchUrl: fresh.batchUrl, sessionId: sameSession});

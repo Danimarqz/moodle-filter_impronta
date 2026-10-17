@@ -21,13 +21,14 @@ test('renews once and switches playlist, events and heartbeat together', async (
   const second = renew();
   await Promise.resolve();
   assert.equal(calls, 1);
-  resolve({playlistUrl: '/new', eventsUrl: '/new-events', sessionUrl: '/new-session', batchUrl: '/new-batch', realtimeUrl: '/new-realtime'});
+  resolve({playlistUrl: '/new', eventsUrl: '/new-events', sessionUrl: '/new-session', batchUrl: '/new-batch', realtimeUrl: '/new-realtime', diagnosticUrl: '/new-diagnostic'});
   await Promise.all([first, second]);
   assert.equal(cfg.playlistUrl, '/new');
   assert.equal(cfg.eventsUrl, '/new-events');
   assert.equal(cfg.sessionUrl, '/new-session');
   assert.equal(cfg.batchUrl, '/new-batch');
   assert.equal(cfg.realtimeUrl, '/new-realtime');
+  assert.equal(cfg.diagnosticUrl, '/new-diagnostic');
 });
 
 test('invalid renewal leaves the old lease unchanged', async () => {

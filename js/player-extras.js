@@ -40,6 +40,9 @@ window.ImprontaPlayerExtras = function(cfg) {
   }
 
   function init(player) {
+    if (window.ImprontaPlaybackDiagnostics) {
+      try { cfg.diagnostics = window.ImprontaPlaybackDiagnostics(player, cfg); } catch (e) {}
+    }
     // All video players use V2. Transport failures remain isolated from
     // playback and from the Legacy comparison pipeline.
     var analyticsV2 = null;
@@ -54,6 +57,9 @@ window.ImprontaPlayerExtras = function(cfg) {
       if (analyticsV2 && typeof analyticsV2.setSession === 'function') { analyticsV2.setSession(sessionId); }
     };
     cfg.onPlaybackRenewed = function(fresh) {
+      if (cfg.diagnosticUrl && (!cfg.diagnostics || !cfg.diagnostics.enabled) && window.ImprontaPlaybackDiagnostics) {
+        try { cfg.diagnostics = window.ImprontaPlaybackDiagnostics(player, cfg); } catch (e) {}
+      }
       var sameSession = fresh.samePlayback ? String(cfg.sessionId || '') : '';
       if (analyticsV2 && typeof analyticsV2.setContext === 'function') {
         analyticsV2.setContext({batchUrl: fresh.batchUrl, sessionId: sameSession});
@@ -216,6 +222,7 @@ window.ImprontaPlayerExtras = function(cfg) {
         if (!res || !res.ok) { throw new Error('heartbeat failed'); }
         return typeof res.json === 'function' ? res.json() : {};
       }).then(function(r) {
+        if (cfg.diagnostics) { cfg.diagnostics.record('heartbeat_ok'); }
         // A playlist renewal may have replaced the signed context while this
         // request was in flight. Its response belongs to the old session and
         // must not overwrite the new V2/WSS context or block state.
@@ -275,6 +282,7 @@ window.ImprontaPlayerExtras = function(cfg) {
           programarLatido(siguienteLatido);
         }
       }).catch(function() {
+        if (cfg.diagnostics) { cfg.diagnostics.record('heartbeat_error'); }
         latidoEnVuelo = false;
         // Even after retoken/replay, a transport failure is not proof that the
         // server did not commit. Keep the SAME tenant-scoped billing batch ID.
@@ -372,9 +380,10 @@ window.ImprontaPlayerExtras = function(cfg) {
     // segmento. La posicion se restaura y el latido (que no conoce el
     // sessionId: lo recupera heartbeat.php) pasa a renovar la nueva sesion
     // sin que este JS tenga que saber nada.
-    function recargarPlaylist() {
+    function recargarPlaylist(reason) {
       if (!renew) { aviso(cfg.expiredText); return; }
       if (renewing) { return; }
+      if (cfg.diagnostics) { cfg.diagnostics.record('recovery_' + reason); cfg.diagnostics.report('recovery'); }
       renewing = true;
       recovered = true;
       var pos = player.currentTime() || 0;
@@ -396,7 +405,7 @@ window.ImprontaPlayerExtras = function(cfg) {
     function refreshIfExpired() {
       var match = /[?&]e=(\d+)/.exec(cfg.playlistUrl || '');
       if (match && Number(match[1]) * 1000 < Date.now() + 60000 && !recovered) {
-        recargarPlaylist();
+        recargarPlaylist('expiry');
       }
     }
     player.on('play', refreshIfExpired);
@@ -416,7 +425,7 @@ window.ImprontaPlayerExtras = function(cfg) {
         aviso(cfg.expiredText);
         return;
       }
-      recargarPlaylist();
+      recargarPlaylist('error');
     });
 
     // --- Video colgado ----------------------------------------------------
@@ -441,7 +450,7 @@ window.ImprontaPlayerExtras = function(cfg) {
           atascado = 0;
           if (recovered) { aviso(cfg.expiredText); return; }
           latir(true);
-          recargarPlaylist();
+          recargarPlaylist('stall');
         }
       } catch (e) { atascado = 0; }
     }, 5000);

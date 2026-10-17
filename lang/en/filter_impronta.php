@@ -21,6 +21,11 @@
  * @license http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 $string['pluginname'] = 'Impronta';
+$string['diagnosticsheading'] = 'Playback debugging';
+$string['diagnosticsdesc'] = 'Capture playback interruptions for selected learners in Moodle logs. This does not affect playback or consumption totals.';
+$string['debugusers'] = 'Moodle user IDs for playback debugging';
+$string['debugusersdesc'] = 'Numeric Moodle user IDs separated by commas, spaces or new lines, for example: 1989, 1327. Empty disables capture for everyone. Capture remains enabled until you remove the IDs; it does not expire automatically. Learners must reload their course page after enabling it. Reports include playback position, buffered ranges, speed, numeric errors and request metrics, without tokens or signed URLs. View the Playback diagnostic recorded events in Moodle logs. Reports use the existing Moodle log retention and are limited to six per learner per minute.';
+$string['playbackdiagnostic'] = 'Playback diagnostic recorded';
 // A filter is named by 'filtername', not by 'pluginname': it titles both the
 // manage-filters row and the settings page. Missing, Moodle prints the literal
 // "[filtername,filter_impronta]" instead.

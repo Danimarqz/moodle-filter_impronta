@@ -158,4 +158,16 @@ if ($hassiteconfig) {
         PARAM_INT,
         10
     ));
+
+    $settings->add(new admin_setting_heading(
+        'filter_impronta/diagnostics',
+        get_string('diagnosticsheading', 'filter_impronta'),
+        get_string('diagnosticsdesc', 'filter_impronta')
+    ));
+    $settings->add(new admin_setting_configtextarea(
+        'filter_impronta/debugusers',
+        get_string('debugusers', 'filter_impronta'),
+        get_string('debugusersdesc', 'filter_impronta'),
+        '', PARAM_RAW_TRIMMED, 40, 3
+    ));
 }

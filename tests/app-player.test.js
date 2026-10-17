@@ -52,6 +52,7 @@ function harness(firstResponse, withV2 = false, subsequentResponse, options = {}
     }
   };
   if (options.playlist) element.attrs['data-impronta-playlist'] = options.playlist;
+  if (options.diagnosticUrl) element.attrs['data-impronta-diagnostic'] = options.diagnosticUrl;
   if (withV2) {
     element.attrs['data-impronta-batch'] = '/batch';
     element.attrs['data-impronta-realtime'] = '/realtime';
@@ -106,6 +107,12 @@ function harness(firstResponse, withV2 = false, subsequentResponse, options = {}
     return {setSession(id) { v2Calls.push('wss:' + id); }, setCredentials() {}};
   };
   context.window.ImprontaWatermarkFit = context.ImprontaWatermarkFit;
+  if (options.realDiagnostics) {
+    context.window.improntaApp.diagnosticsjs = '/diagnostics.js';
+    for (const name of ['fetch', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval']) context.window[name] = context[name];
+    context.Date = class extends Date { static now() { return now; } };
+    vm.runInNewContext(fs.readFileSync(__dirname + '/../js/playback-diagnostics.js', 'utf8'), context);
+  }
   if (options.renew) {
     context.window.improntaApp.renewjs = '/renew.js';
     context.window.improntaApp.renew = (url, opts) => {
@@ -146,6 +153,7 @@ function harness(firstResponse, withV2 = false, subsequentResponse, options = {}
     pause() { this.playing = false; },
     dispose() { this.emit('dispose'); }
   };
+  if (options.realDiagnostics) player.seeking = () => false;
   vm.runInNewContext(source, context, {filename: 'app-player.js'});
 
   async function advance(milliseconds) {
@@ -167,6 +175,27 @@ function harness(firstResponse, withV2 = false, subsequentResponse, options = {}
   }
   return {player, requests, renewals, sources, v2Calls, windowListeners, documentListeners, videojsOptions: () => videojsOptions, advance, settle};
 }
+
+test('app enables diagnostics from fresh renewal even when cached markup has no diagnostic URL', async () => {
+  const h = harness(undefined, true, undefined, {realDiagnostics: true,
+    renew: async () => ({playlistUrl: '/fresh/playlist.m3u8', eventsUrl: '/fresh/events',
+      sessionUrl: '/fresh/session', batchUrl: '/fresh/batch', realtimeUrl: '/fresh/realtime',
+      diagnosticUrl: '/fresh/diagnostic', samePlayback: false})});
+  await h.settle();
+  assert.equal(h.requests.filter(r => r.url === '/fresh/diagnostic').length, 0);
+  await h.player.play(); await h.advance(3500);
+  const report = h.requests.find(r => r.url === '/fresh/diagnostic');
+  assert.ok(report, 'frozen app playback must send its diagnostic through the renewed URL');
+  assert.equal(JSON.parse(report.options.body).reason, 'waiting');
+  h.player.dispose();
+});
+
+test('app players outside the configured list never send diagnostics', async () => {
+  const h = harness(Promise.resolve({ok: true, json: async () => ({})}), true, undefined, {realDiagnostics: true});
+  await h.settle(); await h.player.play(); await h.advance(3500);
+  assert.ok(h.requests.every(r => r.url !== '/diagnostics.js' && !r.url.includes('diagnostic')));
+  h.player.dispose();
+});
 
 test('cached app markup starts a new intent only on Play, before loading media or telemetry', async () => {
   const h = harness(Promise.resolve({ok: true, json: () => Promise.resolve({})}), true, undefined, {

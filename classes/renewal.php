@@ -79,6 +79,8 @@ class renewal {
             $newplaybackid
         );
         return [
+            'diagnosticUrl' => diagnostics::url($path, $newtoken, $newexpires, $courseid,
+                $userid, $group, $newplaybackid),
             'playlistUrl' => token::endpoint_url(
                 'playlist.php',
                 $path,
