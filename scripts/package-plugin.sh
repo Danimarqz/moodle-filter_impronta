@@ -69,8 +69,8 @@ done
 
 # lang/ must ship English only: Moodle distributes every other language through
 # AMOS once the plugin is approved.
-if [ -d lang ] && [ "$(ls -1 lang)" != "en" ]; then
-    echo "lang/ must contain only 'en' (found: $(ls -1 lang | tr '\n' ' '))" >&2
+if [ ! -d lang/en ]; then
+    echo "lang/en/ is required for the plugin package" >&2
     exit 1
 fi
 
@@ -84,7 +84,12 @@ for f in "${FILES[@]}"; do
     cp -p "${f}" "${DEST}/${f}"
 done
 for d in "${DIRS[@]}"; do
-    cp -Rp "${d}" "${DEST}/${d}"
+    if [ "${d}" = "lang" ]; then
+        mkdir -p "${DEST}/lang"
+        cp -Rp "lang/en" "${DEST}/lang/en"
+    else
+        cp -Rp "${d}" "${DEST}/${d}"
+    fi
 done
 
 # Defensive: strip anything that must never leave this repository even if it

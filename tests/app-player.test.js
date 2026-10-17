@@ -4,10 +4,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(__dirname + '/../js/app-player.js', 'utf8');
+const root = process.env.IMPRONTA_PLUGIN_ROOT || __dirname + '/..';
+const source = fs.readFileSync(root + '/js/app-player.js', 'utf8');
 
 function harness(firstResponse, withV2 = false, subsequentResponse, options = {}) {
-  let now = 0;
+  let now = options.clock || 0;
   let nextTimer = 1;
   let player;
   const timers = new Map();
@@ -113,13 +114,16 @@ function harness(firstResponse, withV2 = false, subsequentResponse, options = {}
     context.Date = class extends Date { static now() { return now; } };
     vm.runInNewContext(fs.readFileSync(__dirname + '/../js/playback-diagnostics.js', 'utf8'), context);
   }
+  if (options.clock !== undefined) {
+    context.Date = class extends Date { static now() { return now; } };
+  }
   if (options.renew) {
     context.window.improntaApp.renewjs = '/renew.js';
     context.window.improntaApp.renew = (url, opts) => {
       renewals.push({url, options: opts});
       return options.renew(url, opts);
     };
-    vm.runInNewContext(fs.readFileSync(__dirname + '/../js/playback-renew.js', 'utf8'), context);
+    vm.runInNewContext(fs.readFileSync(root + '/js/playback-renew.js', 'utf8'), context);
   }
   if (options.realV2) {
     for (const name of ['fetch', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval']) {
@@ -148,7 +152,11 @@ function harness(firstResponse, withV2 = false, subsequentResponse, options = {}
     paused() { return !this.playing; },
     play() { this.emit('play'); return Promise.resolve(); },
     src(source) { sources.push(source); this.emit('loadedmetadata'); },
-    currentTime() { return this.position; },
+    currentTime(value) {
+      if (value !== undefined) { this.position = value; return value; }
+      if (options.clock !== undefined && this.playing && this.position === 0) { return (now - options.clock) / 1000; }
+      return this.position;
+    },
     el() { return {querySelector() { return null; }}; },
     pause() { this.playing = false; },
     dispose() { this.emit('dispose'); }
@@ -173,14 +181,15 @@ function harness(firstResponse, withV2 = false, subsequentResponse, options = {}
   async function settle() {
     for (let i = 0; i < 20; i += 1) await Promise.resolve();
   }
-  return {player, requests, renewals, sources, v2Calls, windowListeners, documentListeners, videojsOptions: () => videojsOptions, advance, settle};
+  return {player, requests, renewals, sources, v2Calls, windowListeners, documentListeners,
+    videojsOptions: () => videojsOptions, advance, settle, clockNow: () => now};
 }
 
 test('app enables diagnostics from fresh renewal even when cached markup has no diagnostic URL', async () => {
   const h = harness(undefined, true, undefined, {realDiagnostics: true,
     renew: async () => ({playlistUrl: '/fresh/playlist.m3u8', eventsUrl: '/fresh/events',
       sessionUrl: '/fresh/session', batchUrl: '/fresh/batch', realtimeUrl: '/fresh/realtime',
-      diagnosticUrl: '/fresh/diagnostic', samePlayback: false})});
+      diagnosticUrl: '/fresh/diagnostic', expiresAt: 1900000000, samePlayback: false})});
   await h.settle();
   assert.equal(h.requests.filter(r => r.url === '/fresh/diagnostic').length, 0);
   await h.player.play(); await h.advance(3500);
@@ -200,7 +209,7 @@ test('app players outside the configured list never send diagnostics', async () 
 test('cached app markup starts a new intent only on Play, before loading media or telemetry', async () => {
   const h = harness(Promise.resolve({ok: true, json: () => Promise.resolve({})}), true, undefined, {
     renew: async () => ({playlistUrl: '/fresh/playlist.m3u8', eventsUrl: '/fresh/events',
-      sessionUrl: '/fresh/session', batchUrl: '/fresh/batch', realtimeUrl: '/fresh/realtime', samePlayback: false})
+      sessionUrl: '/fresh/session', batchUrl: '/fresh/batch', realtimeUrl: '/fresh/realtime', expiresAt: 1900000000, samePlayback: false})
   });
   await h.settle();
   assert.equal(h.renewals.length, 0, 'mounting unused videos must not allocate sessions');
@@ -216,10 +225,110 @@ test('cached app markup starts a new intent only on Play, before loading media o
   assert.equal(h.renewals.length, 1, 'pause/resume must preserve this instance identity');
 });
 
+test('App first Play renews through its authenticated path and reaches proactive renewal within the first 15-minute lease', async () => {
+  const start = 1900000000000;
+  const renewalTimes = [];
+  let h;
+  h = harness(undefined, true, undefined, {
+    clock: start,
+    realV2: true,
+    renew: async (url, options) => {
+      renewalTimes.push({at: h.clockNow(), options});
+      const expiresAt = Math.floor(h.clockNow() / 1000) + 21600;
+      return {playlistUrl: '/fresh-' + renewalTimes.length + '/playlist.m3u8?e=' + expiresAt,
+        eventsUrl: '/fresh/events', sessionUrl: '/fresh/session', batchUrl: '/fresh/batch',
+        realtimeUrl: '/fresh/realtime', expiresAt, samePlayback: false};
+    },
+    transport: async url => {
+      if (url === '/realtime' || url === '/fresh/realtime') {
+        const expiresAt = Math.floor(h.clockNow() / 1000) + 3600;
+        return {ok: true, json: async () => ({sessionId: 'synthetic-app-session',
+          url: 'wss://synthetic.invalid/realtime', token: 'synthetic', expiresAt,
+          authorizedPlayback: true, manifestExpiresAt: expiresAt - 1800})};
+      }
+      return {ok: true, json: async () => ({heartbeatSeconds: 60, authorizedPlayback: true,
+        fragmentLeaseExpiresAt: Math.floor(start / 1000) + 900})};
+    }
+  });
+  await h.settle();
+  assert.equal(h.renewals.length, 0, 'mounting cached App markup must not allocate a lease');
+  await h.player.play();
+  await h.settle();
+  assert.equal(h.renewals.length, 1);
+  assert.equal(h.renewals[0].options.newPlayback, true, 'first explicit Play obtains its own App lease');
+  const firstExpiresAt = Math.floor(start / 1000) + 900;
+  assert.equal(renewalTimes[0].at, start);
+  assert.equal(new URL('https://moodle.invalid' + h.sources[0].src).searchParams.get('e'), String(Math.floor(start / 1000) + 21600),
+    'the signed Moodle URL retains its separate six-hour HMAC lifetime');
+  await h.advance(30000);
+  await h.advance(780000);
+  assert.equal(h.renewals.length, 2, 'the first backend fragment capability renews proactively before its 15-minute expiry');
+  assert.equal(h.renewals[1].options.newPlayback, false, 'proactive renewal preserves the logical playback');
+  assert.ok(renewalTimes[1].at >= firstExpiresAt * 1000 - 90000,
+    'the stale WSS manifest deadline cannot replace authorized.expires_at');
+  assert.ok(renewalTimes[1].at < firstExpiresAt * 1000, 'renewal occurs before the fragment capability expires');
+  assert.equal(h.sources.length, 2, 'the renewed HLS source is installed after metadata readiness');
+  h.player.dispose();
+});
+
+test('App heartbeat authorizes the shared lease lifecycle and rejects a late lease from the prior source generation', async () => {
+  const start = 1900000000000;
+  let h;
+  let finishOldHeartbeat;
+  let heartbeatCalls = 0;
+  const renewCalls = [];
+  h = harness(undefined, false, undefined, {
+    clock: start,
+    renew: async (url, options) => {
+      renewCalls.push({at: h.clockNow(), options});
+      const expiresAt = Math.floor(h.clockNow() / 1000) + 21600;
+      return {playlistUrl: '/app-session.m3u8?e=' + expiresAt, eventsUrl: '/events',
+        sessionUrl: '/session', batchUrl: '/batch', realtimeUrl: '/realtime', expiresAt,
+        samePlayback: !options.newPlayback};
+    },
+    transport: async url => {
+      if (url !== '/session') return {ok: true, json: async () => ({})};
+      heartbeatCalls++;
+      if (heartbeatCalls === 1) {
+        return {ok: true, json: async () => ({heartbeatSeconds: 1, authorizedPlayback: true,
+          fragmentLeaseExpiresAt: Math.floor(start / 1000) + 900})};
+      }
+      return new Promise(resolve => { finishOldHeartbeat = resolve; });
+    }
+  });
+
+  await h.settle();
+  await h.player.play();
+  await h.settle();
+  assert.equal(renewCalls.length, 1, 'first Play obtains the App-owned authenticated playback');
+
+  await h.advance(30000);
+  assert.equal(heartbeatCalls, 1, 'the actual App heartbeat establishes the backend fragment lease');
+  await h.advance(1000);
+  assert.equal(typeof finishOldHeartbeat, 'function', 'a second heartbeat remains in flight on the old source');
+
+  await h.advance(779000);
+  h.player.emit('timeupdate');
+  await h.settle();
+  assert.equal(renewCalls.length, 2,
+    'authorized.expires_at drives proactive renewal through the App first-TTL callsite');
+  assert.equal(renewCalls[1].options.newPlayback, false);
+  assert.equal(h.sources.length, 2, 'the renewed App HLS source is installed');
+
+  finishOldHeartbeat({ok: true, json: async () => ({heartbeatSeconds: 1, authorizedPlayback: true,
+    fragmentLeaseExpiresAt: Math.floor(h.clockNow() / 1000) + 1})});
+  await h.settle();
+  h.player.emit('timeupdate');
+  await h.settle();
+  assert.equal(renewCalls.length, 2,
+    'same /session URL cannot let a pre-renewal heartbeat reinstate the expired source lease');
+  h.player.dispose();
+});
+
 test('foreground does not renew expired cached markup of an unused player', async () => {
   const h = harness(undefined, true, undefined, {playlist: '/playlist.m3u8?e=1',
     renew: async () => ({playlistUrl: '/fresh/playlist.m3u8', eventsUrl: '/fresh/events',
-      sessionUrl: '/fresh/session', batchUrl: '/fresh/batch', realtimeUrl: '/fresh/realtime', samePlayback: true})});
+      sessionUrl: '/fresh/session', batchUrl: '/fresh/batch', realtimeUrl: '/fresh/realtime', expiresAt: 1900000000, samePlayback: true})});
   await h.settle();
   h.documentListeners.visibilitychange();
   await h.settle();
@@ -234,7 +343,7 @@ test('two instances restored from identical markup submit sequence 1 under diffe
   const receipts = new Map([['cached-session:1', 'previously-accepted']]);
   const accepted = [];
   const fresh = name => ({playlistUrl: '/' + name + '/playlist.m3u8', eventsUrl: '/' + name + '/events',
-    sessionUrl: '/' + name + '/session', batchUrl: '/' + name + '/batch', realtimeUrl: '/' + name + '/realtime', samePlayback: false});
+    sessionUrl: '/' + name + '/session', batchUrl: '/' + name + '/batch', realtimeUrl: '/' + name + '/realtime', expiresAt: 1900000000, samePlayback: false});
   for (const name of ['first', 'second']) {
     const h = harness(undefined, true, undefined, {realV2: true, renew: async () => fresh(name),
       transport: async (url, opts) => {

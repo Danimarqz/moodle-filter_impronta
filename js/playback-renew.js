@@ -11,9 +11,29 @@ window.ImprontaPlaybackRenew = function(cfg, request) {
     }
     pendingReplay = replay;
     if (cfg.diagnostics) { cfg.diagnostics.record('renew_start'); }
-    pending = Promise.resolve().then(function() { return request(cfg.playlistUrl, options || {}); }).then(function(fresh) {
+    var controller = typeof window.AbortController === 'function' ? new window.AbortController() : null;
+    var requestOptions = Object.assign({}, options || {});
+    if (controller) { requestOptions.signal = controller.signal; }
+    var timeoutId = null;
+    var requestPromise = Promise.resolve().then(function() { return request(cfg.playlistUrl, requestOptions); });
+    var boundedRequest = requestPromise;
+    if (typeof window.setTimeout === 'function') {
+      var deadline = new Promise(function(resolve, reject) {
+        timeoutId = window.setTimeout(function() {
+          if (controller) { controller.abort(); }
+          reject(new Error('playback renewal timed out'));
+        }, 15000);
+      });
+      boundedRequest = Promise.race([requestPromise, deadline]);
+    }
+    pending = boundedRequest.then(function(fresh) {
+      var expiresAt = Number(fresh && fresh.expiresAt || 0);
+      if (!(expiresAt > 0)) {
+        var expiryMatch = /[?&]e=(\d+)/.exec(fresh && fresh.playlistUrl || '');
+        expiresAt = expiryMatch ? Number(expiryMatch[1]) : 0;
+      }
       if (!fresh || !fresh.playlistUrl || !fresh.eventsUrl || !fresh.sessionUrl
-          || !fresh.batchUrl || !fresh.realtimeUrl || (replay && fresh.samePlayback)) {
+          || !fresh.batchUrl || !fresh.realtimeUrl || !(expiresAt > 0) || (replay && fresh.samePlayback)) {
         throw new Error('invalid playback renewal');
       }
       cfg.playlistUrl = fresh.playlistUrl;
@@ -27,13 +47,32 @@ window.ImprontaPlaybackRenew = function(cfg, request) {
         cfg.onPlaybackRenewed(fresh);
       }
       return fresh;
-    }).then(function(value) { pending = null; return value; }, function(error) {
+    }).then(function(value) {
+      if (timeoutId !== null) { window.clearTimeout(timeoutId); }
+      pending = null;
+      return value;
+    }, function(error) {
+      if (timeoutId !== null) { window.clearTimeout(timeoutId); }
       pending = null;
       if (cfg.diagnostics) { cfg.diagnostics.record('renew_error'); }
       throw error;
     });
     return pending;
   };
+};
+
+// The Moodle `e` parameter (and renewal `expiresAt`) authenticate Moodle URLs;
+// neither is the short-lived fragment capability. Only an authenticated
+// heartbeat may seed this deadline from the server-side lease cached when the
+// current playlist was fetched.
+window.ImprontaAcceptFragmentLease = function(cfg, response) {
+  if (!cfg || !response || response.authorizedPlayback !== true
+      || !Object.prototype.hasOwnProperty.call(response, 'fragmentLeaseExpiresAt')) { return false; }
+  var expiresAt = Number(response.fragmentLeaseExpiresAt);
+  if (!isFinite(expiresAt) || expiresAt <= 0) { return false; }
+  cfg.fragmentLeaseExpiresAt = expiresAt;
+  cfg.authorizedPlayback = true;
+  return true;
 };
 
 // A mobile course can restore signed markup from disk. Each NEW player obtains
@@ -167,73 +206,242 @@ window.ImprontaAuthorizedLifecycle = function(player, cfg, renew) {
   var pending = false;
   var destroyed = false;
   var timer = null;
+  var replayRetryTimer = null;
   var retryAfter = 0;
   var loadTimer = null;
   var cycle = 0;
   var loading = false;
+  var retryNeeded = false;
+  var ignoredPauseEvents = 0;
+  var internalPause = false;
+  var wantsPlayback = !player.paused();
+  var position = 0;
+  var playbackRate = 1;
+  var sourceListeners = null;
+  var doc = window.document;
+
+  if (!isFinite(Number(cfg.authorizedSourceGeneration))) { cfg.authorizedSourceGeneration = 0; }
+  if (typeof cfg.authorizedSourceReady !== 'boolean') { cfg.authorizedSourceReady = true; }
+
+  if (!Number(cfg.fragmentLeaseExpiresAt || 0)) {
+    cfg.fragmentLeaseExpiresAt = 0;
+  }
+
   function clearLoadTimer() {
     if (loadTimer !== null) { window.clearTimeout(loadTimer); loadTimer = null; }
   }
-  function failLoad() {
+
+  function clearReplayRetry() {
+    if (replayRetryTimer !== null) { window.clearTimeout(replayRetryTimer); replayRetryTimer = null; }
+  }
+
+  function scheduleReplayRetry() {
+    if (replayRetryTimer !== null || !ended || !wantsPlayback || destroyed
+        || typeof window.setTimeout !== 'function') { return; }
+    replayRetryTimer = window.setTimeout(function() {
+      replayRetryTimer = null;
+      if (ended && wantsPlayback && !destroyed) { reload(true, 'replay'); }
+    }, Math.max(0, retryAfter - Date.now()));
+  }
+
+  function removeSourceListeners() {
+    if (!sourceListeners) { return; }
+    player.off('loadedmetadata', sourceListeners.metadata);
+    player.off('error', sourceListeners.error);
+    sourceListeners = null;
+  }
+
+  function release(error) {
     if (!loading) { return; }
     cycle += 1;
     loading = false;
     pending = false;
     retryAfter = Date.now() + 30000;
+    retryNeeded = true;
     clearLoadTimer();
+    removeSourceListeners();
+    if (error && typeof cfg.onRenewalError === 'function') { cfg.onRenewalError(error); }
+    if (ended && wantsPlayback) { scheduleReplayRetry(); }
   }
-  function reload(replay) {
+
+  function failLoad() { release(new Error('playback source unavailable')); }
+
+  function pauseForSourceReplacement() {
+    if (player.paused()) { return; }
+    ignoredPauseEvents += 1;
+    internalPause = true;
+    try { player.pause(); } catch (error) { ignoredPauseEvents -= 1; }
+    finally { internalPause = false; }
+  }
+
+  function reload(replay, reason) {
     if (destroyed || !cfg.authorizedPlayback || typeof renew !== 'function') { return; }
-    if (pending || Date.now() < retryAfter) {
-      if (replay) { try { player.pause(); } catch (e) {} }
+    if (pending) {
+      if (!replay) { return; }
+      // A Play after ended is a new logical session, even if an ordinary
+      // renewal is already in flight. Cancel its source installation and queue
+      // the identity-changing request behind the transport single-flight.
+      wantsPlayback = true;
+      ended = true;
+      pauseForSourceReplacement();
+      cycle += 1;
+      pending = false;
+      if (loading) {
+        loading = false;
+        clearLoadTimer();
+        removeSourceListeners();
+      }
+      reload(true, reason || 'replay');
       return;
     }
-    if (cfg.diagnostics) { cfg.diagnostics.record(replay ? 'recovery_replay' : 'recovery_expiry'); cfg.diagnostics.report('recovery'); }
+    if (Date.now() < retryAfter) {
+      if (replay) {
+        wantsPlayback = true;
+        ended = true;
+        pauseForSourceReplacement();
+        scheduleReplayRetry();
+      }
+      return;
+    }
+    if (cfg.diagnostics) {
+      cfg.diagnostics.record(replay ? 'recovery_replay' : 'recovery_' + (reason || 'expiry'));
+      cfg.diagnostics.report('recovery');
+    }
     pending = true;
+    retryNeeded = false;
     var currentCycle = ++cycle;
-    var position = replay ? 0 : Number(player.currentTime() || 0);
-    var resume = !player.paused();
-    try { player.pause(); } catch (e) {}
-    if (typeof cfg.beforeAuthorizedReload === 'function') { cfg.beforeAuthorizedReload(); }
+    var resume = false;
+    if (replay) {
+      wantsPlayback = true;
+      clearReplayRetry();
+      pauseForSourceReplacement();
+    }
     Promise.resolve().then(function() { return renew({newPlayback: replay}); }).then(function(fresh) {
       if (destroyed || currentCycle !== cycle) { return; }
-      cfg.fragmentLeaseExpiresAt = 0;
+      if (!fresh || !fresh.playlistUrl) { throw new Error('invalid playback renewal'); }
+      position = replay ? 0 : Number(player.currentTime() || 0);
+      playbackRate = typeof player.playbackRate === 'function' ? Number(player.playbackRate() || 1) : 1;
+      resume = replay || wantsPlayback;
       loading = true;
+      pauseForSourceReplacement();
+      cfg.authorizedSourceGeneration += 1;
+      cfg.authorizedSourceReady = false;
+      if (typeof cfg.beforeAuthorizedReload === 'function') { cfg.beforeAuthorizedReload(); }
       if (typeof window.setTimeout === 'function') { loadTimer = window.setTimeout(failLoad, 15000); }
-      player.one('loadedmetadata', function() {
+      function onMetadata() {
         if (currentCycle !== cycle || !loading) { return; }
         clearLoadTimer();
         loading = false;
         pending = false;
+        retryAfter = 0;
+        retryNeeded = false;
+        // The new manifest has now been fetched and its server-side lease
+        // cached. Await its heartbeat deadline instead of carrying the old
+        // capability expiry across source generations.
+        cfg.fragmentLeaseExpiresAt = 0;
+        cfg.authorizedSourceReady = true;
+        removeSourceListeners();
         if (destroyed) { return; }
-        ended = false;
+        if (replay) { ended = false; }
         player.currentTime(position);
-        if (resume) {
+        if (typeof player.playbackRate === 'function') { player.playbackRate(playbackRate); }
+        if (resume && wantsPlayback && !ended) {
           var played = player.play();
           if (played && typeof played.catch === 'function') { played.catch(function() {}); }
         }
-      });
-      player.src({src: fresh.playlistUrl, type: 'application/x-mpegURL'});
+      }
+      function onError() {
+        failLoad();
+      }
+      sourceListeners = {metadata: onMetadata, error: onError};
+      player.on('loadedmetadata', onMetadata);
+      player.on('error', onError);
+      try {
+        player.src({src: fresh.playlistUrl, type: 'application/x-mpegURL'});
+      } catch (error) {
+        failLoad();
+      }
     }).catch(function() {
       pending = false;
       retryAfter = Date.now() + 30000;
-      if (!destroyed && resume && !replay) {
-        // Failed auxiliary renewal does not impose an extra playback stop;
-        // existing media/auth error recovery remains responsible for expiry.
-        var played = player.play();
-        if (played && typeof played.catch === 'function') { played.catch(function() {}); }
-      }
+      retryNeeded = true;
+      if (ended && wantsPlayback) { scheduleReplayRetry(); }
     });
   }
+
   function check() {
     if (destroyed || pending || player.paused() || ended || !cfg.authorizedPlayback) { return; }
+    if (retryNeeded) {
+      if (Date.now() >= retryAfter) { reload(false, 'error'); }
+      return;
+    }
     var deadline = Number(cfg.fragmentLeaseExpiresAt || 0);
-    if (deadline > 0 && deadline * 1000 <= Date.now() + 90000) { reload(false); }
+    if (deadline > 0 && deadline * 1000 <= Date.now() + 90000) { reload(false, 'expiry'); }
   }
-  player.on('ended', function() { ended = true; });
-  player.on('play', function() { if (ended && cfg.authorizedPlayback) { reload(true); } else { check(); } });
+
+  player.on('ended', function() { ended = true; wantsPlayback = false; });
+  player.on('play', function() {
+    wantsPlayback = true;
+    if (ended && cfg.authorizedPlayback) { reload(true, 'replay'); } else { check(); }
+  });
+  player.on('pause', function() {
+    if (ignoredPauseEvents > 0) { ignoredPauseEvents -= 1; return; }
+    wantsPlayback = false;
+    clearReplayRetry();
+  });
+  if (typeof player.pause === 'function') {
+    var originalPause = player.pause;
+    player.pause = function() {
+      if (!internalPause) { wantsPlayback = false; clearReplayRetry(); }
+      return originalPause.apply(player, arguments);
+    };
+  }
   player.on('timeupdate', check);
-  player.on('error', failLoad);
+  player.on('error', function() {
+    if (loading) { failLoad(); }
+    else if (cfg.authorizedPlayback) { reload(false, 'error'); }
+  });
+  function onVisibilityChange() {
+    if (!doc) { return; }
+    if (doc.visibilityState === 'hidden') {
+      wantsPlayback = false;
+      clearReplayRetry();
+      cycle += 1;
+      pending = false;
+      loading = false;
+      clearLoadTimer();
+      removeSourceListeners();
+    } else {
+      check();
+    }
+  }
+  function onPageHide() {
+    wantsPlayback = false;
+    clearReplayRetry();
+    cycle += 1;
+    pending = false;
+    loading = false;
+    clearLoadTimer();
+    removeSourceListeners();
+  }
+  if (doc && typeof doc.addEventListener === 'function') { doc.addEventListener('visibilitychange', onVisibilityChange); }
+  if (typeof window.addEventListener === 'function') { window.addEventListener('pagehide', onPageHide); }
   if (typeof window.setInterval === 'function') { timer = window.setInterval(check, 30000); }
-  player.on('dispose', function() { destroyed = true; cycle += 1; clearLoadTimer(); if (timer !== null) { window.clearInterval(timer); } });
+  player.on('dispose', function() {
+    destroyed = true;
+    wantsPlayback = false;
+    clearReplayRetry();
+    cycle += 1;
+    loading = false;
+    pending = false;
+    clearLoadTimer();
+    removeSourceListeners();
+    if (doc && typeof doc.removeEventListener === 'function') { doc.removeEventListener('visibilitychange', onVisibilityChange); }
+    if (typeof window.removeEventListener === 'function') { window.removeEventListener('pagehide', onPageHide); }
+    if (timer !== null) { window.clearInterval(timer); }
+  });
+  return {
+    renew: function(reason) { reload(false, reason || 'error'); },
+    refresh: check
+  };
 };

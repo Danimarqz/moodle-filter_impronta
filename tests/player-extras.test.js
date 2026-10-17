@@ -4,9 +4,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(__dirname + '/../js/player-extras.js', 'utf8');
+const root = process.env.IMPRONTA_PLUGIN_ROOT || __dirname + '/..';
+const source = fs.readFileSync(root + '/js/player-extras.js', 'utf8');
 
-function harness(sessionFetch, withV2 = false) {
+function harness(sessionFetch, withV2 = false, extraConfig = {}, realRealtime = false) {
   let now = 0;
   let nextId = 1;
   const timers = new Map();
@@ -19,8 +20,12 @@ function harness(sessionFetch, withV2 = false) {
     handlers: {},
     playing: false,
     position: 0,
+    source: null,
     on(type, handler) {
       (this.handlers[type] ||= []).push(handler);
+    },
+    off(type, handler) {
+      this.handlers[type] = (this.handlers[type] || []).filter((item) => item !== handler);
     },
     one(type, handler) {
       const once = () => {
@@ -36,9 +41,10 @@ function harness(sessionFetch, withV2 = false) {
     },
     ready(handler) { handler(); },
     paused() { return !this.playing; },
+    play() { this.emit('play'); return Promise.resolve(); },
     currentTime() { return this.position; },
     pause() { this.playing = false; },
-    src() {},
+    src(value) { if (value && value.src) this.source = value.src; },
   };
   const context = {
     window: {},
@@ -71,6 +77,8 @@ function harness(sessionFetch, withV2 = false) {
     },
     clearInterval(id) { timers.delete(id); },
     Date: {now: () => now},
+    FormData,
+    AbortController,
     console,
     addEventListener(type, handler) { windowListeners[type] = handler; },
     removeEventListener(type, handler) {
@@ -84,20 +92,28 @@ function harness(sessionFetch, withV2 = false) {
     return {setSession(id) { v2Calls.push('batch:' + id); },
       flush(reason) { v2Calls.push('flush:' + reason); }};
   };
-  context.ImprontaRealtimeV2 = (video, cfg) => {
-    v2Calls.push('wss');
-    return {setSession(id) { v2Calls.push('wss:' + id); }, setCredentials() {}};
-  };
+  if (realRealtime) {
+    vm.runInNewContext(fs.readFileSync(root + '/js/realtime-v2.js', 'utf8'), context, {filename: 'realtime-v2.js'});
+  } else {
+    context.ImprontaRealtimeV2 = (video, cfg) => {
+      v2Calls.push('wss');
+      return {setSession(id) { v2Calls.push('wss:' + id); }, setCredentials() {}};
+    };
+  }
+  vm.runInNewContext(fs.readFileSync(root + '/js/playback-renew.js', 'utf8'), context, {filename: 'playback-renew.js'});
   vm.runInNewContext(source, context, {filename: 'player-extras.js'});
-  context.ImprontaPlayerExtras({
+  const playerConfig = {
     targetId: 'video',
     eventsUrl: '/events',
     sessionUrl: '/session',
     subject: 'student',
     videoPath: 'lesson.m3u8',
     heartbeatSeconds: 15,
+    ...extraConfig,
     ...(withV2 ? {batchUrl: '/batch', realtimeUrl: '/realtime'} : {}),
-  });
+  };
+  context.testConfig = playerConfig;
+  context.ImprontaPlayerExtras(playerConfig);
 
   async function advance(milliseconds) {
     const target = now + milliseconds;
@@ -134,9 +150,9 @@ test('same-session retoken keeps the financial batch ID after an ambiguous ackno
   for (let i=1;i<=6;i++) { h.player.position = i; h.player.emit('timeupdate'); }
   h.player.emit('pause'); await h.settle();
   const original = JSON.parse(h.requests.find(r => r.url === '/session').options.body);
-  vm.runInNewContext(fs.readFileSync(__dirname + '/../js/playback-renew.js','utf8'),h.context);
+  vm.runInNewContext(fs.readFileSync(root + '/js/playback-renew.js','utf8'),h.context);
   await h.context.ImprontaPlaybackRenew(h.config,() => Promise.resolve({samePlayback:true,
-    playlistUrl:'/renewed-manifest',eventsUrl:'/renewed-events',sessionUrl:'/renewed-session',batchUrl:'/renewed-batch',realtimeUrl:'/renewed-realtime'}))();
+    playlistUrl:'/renewed-manifest',eventsUrl:'/renewed-events',sessionUrl:'/renewed-session',batchUrl:'/renewed-batch',realtimeUrl:'/renewed-realtime',expiresAt:1900000000}))();
   rejectFirst(new Error('lost ACK after commit')); await h.settle();
   h.player.emit('play'); await h.advance(120000);
   const retry = JSON.parse(h.requests.find(r => r.url === '/renewed-session').options.body);
@@ -171,6 +187,250 @@ test('Legacy heartbeat acknowledgements do not force V2 checkpoints', async () =
   await h.advance(180000);
   assert.ok(h.v2Calls.filter((call) => call === 'batch:s1').length >= 2);
   assert.deepEqual(h.v2Calls.filter((call) => call.startsWith('flush:')), []);
+});
+
+test('web first playback crosses the backend fragment TTL via the existing heartbeat callsite', async () => {
+  const h = harness(() => Promise.resolve({ok: true, json: () => Promise.resolve({sessionId: 's1',
+    authorizedPlayback: true, fragmentLeaseExpiresAt: 900,
+    realtime: {url: 'wss://test.invalid', token: 'wss', expiresAt: 21600,
+      manifestExpiresAt: 9999999999}})}), true, {
+    authorizedPlayback: true,
+    playlistUrl: '/filter/impronta/playlist.php?f=class&e=21600',
+    fragmentLeaseExpiresAt: 0,
+  });
+  let renewals = 0;
+  const renew = h.context.window.ImprontaPlaybackRenew(h.config, () => {
+    renewals++;
+    return Promise.resolve({playlistUrl:'/fresh', eventsUrl:'/fresh-events', sessionUrl:'/fresh-session',
+      batchUrl:'/fresh-batch', realtimeUrl:'/fresh-realtime', diagnosticUrl:'/fresh-diagnostic',
+      expiresAt: 43200, samePlayback: true});
+  });
+  h.context.window.ImprontaAuthorizedLifecycle(h.player, h.config, renew);
+  h.player.emit('play');
+  await h.advance(30000);
+  assert.equal(h.config.fragmentLeaseExpiresAt, 900,
+    'existing Moodle heartbeat callsite propagates authorized.expires_at, not nested WSS or URL e');
+  await h.advance(780000);
+  h.player.emit('timeupdate');
+  await h.settle();
+  assert.equal(renewals, 1, 'first 15-minute fragment lease is renewed before expiry');
+});
+
+test('heartbeat for a reincarnated session URL cannot restore the previous source lease', async () => {
+  let finishHeartbeat;
+  const h = harness(() => new Promise(resolve => { finishHeartbeat = resolve; }), false, {
+    authorizedPlayback: true,
+    playlistUrl: '/old-manifest',
+    fragmentLeaseExpiresAt: 900,
+    realtimeUrl: '/realtime',
+    enabled: false,
+  }, true);
+  let renewals = 0;
+  let finishRenewal;
+  const renew = h.context.ImprontaPlaybackRenew(h.config, () => {
+    renewals++;
+    return new Promise(resolve => { finishRenewal = resolve; });
+  });
+  const fresh = {
+    playlistUrl: '/fresh-manifest', eventsUrl: '/fresh-events', sessionUrl: '/session',
+    batchUrl: '/fresh-batch', realtimeUrl: '/fresh-realtime', expiresAt: 21600,
+    samePlayback: true,
+  };
+  h.context.ImprontaAuthorizedLifecycle(h.player, h.config, renew);
+  h.player.emit('play');
+  await h.advance(30000);
+  assert.equal(typeof finishHeartbeat, 'function', 'the original-session heartbeat is in flight');
+
+  h.config.fragmentLeaseExpiresAt = 1;
+  h.player.emit('timeupdate');
+  await h.settle();
+  assert.equal(renewals, 1, 'the real playback callsite starts renewal on the expired capability');
+  finishRenewal(fresh);
+  await renew(); // Join the same in-flight request to know when the source swap is installed.
+  await h.settle();
+  assert.ok(h.player.handlers.loadedmetadata?.length, 'the renewed source waits for metadata');
+  h.player.emit('loadedmetadata');
+  await h.settle();
+  assert.equal(h.config.fragmentLeaseExpiresAt, 0, 'new metadata invalidates the previous capability deadline');
+
+  finishHeartbeat({ok: true, json: () => Promise.resolve({
+    sessionId: 'same-session', authorizedPlayback: true, fragmentLeaseExpiresAt: 50,
+  })});
+  await h.settle();
+  assert.equal(h.config.fragmentLeaseExpiresAt, 0,
+    'same session URL is not sufficient to adopt a heartbeat from the previous source generation');
+});
+
+test('web player renewal forwards AbortSignal and bounds a stalled authenticated fetch', async () => {
+  const h = harness(null, false, {
+    authorizedPlayback: true,
+    renewUrl: '/renew.php',
+    sesskey: 'synthetic-sesskey',
+    realtimeUrl: '/realtime',
+    enabled: false,
+  }, true);
+  const renewRequests = [];
+  h.context.fetch = (url, options) => {
+    if (url === '/renew.php') {
+      renewRequests.push(options);
+      if (renewRequests.length === 1) { return new Promise(() => {}); }
+      return Promise.resolve({ok: true, json: () => Promise.resolve({
+        playlistUrl: '/retried-playlist', eventsUrl: '/retried-events',
+        sessionUrl: '/retried-session', batchUrl: '/retried-batch',
+        realtimeUrl: '/retried-realtime', expiresAt: 21600,
+      })});
+    }
+    return Promise.resolve({ok: true, json: () => Promise.resolve({heartbeatSeconds: 60})});
+  };
+
+  h.player.emit('play');
+  h.player.emit('error');
+  await h.settle();
+  assert.equal(renewRequests.length, 1, 'the real player error path reaches Moodle renewal');
+  assert.ok(renewRequests[0].signal, 'the authenticated POST receives an abort signal');
+  await h.advance(16000);
+  assert.equal(renewRequests[0].signal.aborted, true, 'the deadline aborts the unresolved web request');
+  await h.advance(30001);
+  h.player.emit('timeupdate');
+  await h.settle();
+  assert.equal(renewRequests.length, 2, 'timed-out renewal releases the player lifecycle for a later retry');
+});
+
+function renewalResponse(samePlayback) {
+  return {ok: true, json: () => Promise.resolve({playlistUrl: '/new-manifest',
+    eventsUrl: '/new-events', sessionUrl: '/new-session', batchUrl: '/new-batch',
+    realtimeUrl: '/new-realtime', expiresAt: 21600, samePlayback})};
+}
+
+async function waitForSource(h) {
+  for (let i = 0; i < 20 && !h.player.source; i += 1) await h.settle();
+}
+
+async function settleRenewal(h) {
+  for (let i = 0; i < 12; i += 1) await h.settle();
+}
+
+test('Play after ended queues a new playback identity behind an in-flight renewal', async () => {
+  let finishFirst;
+  const h = harness(null, false, {authorizedPlayback: true, renewUrl: '/renew.php',
+    playlistUrl: '/old-manifest', sesskey: 'synthetic'});
+  h.player.source = '/old-manifest';
+  const renewRequests = [];
+  h.context.fetch = (url, options) => {
+    if (url !== '/renew.php') return Promise.resolve({ok: true, json: () => Promise.resolve({})});
+    renewRequests.push(options);
+    if (renewRequests.length === 1) return new Promise(resolve => { finishFirst = resolve; });
+    return Promise.resolve(renewalResponse(false));
+  };
+
+  h.player.emit('play');
+  h.player.emit('error');
+  await settleRenewal(h);
+  assert.equal(renewRequests.length, 1, 'an ordinary recovery is pending');
+  h.player.emit('ended');
+  h.player.play();
+  await settleRenewal(h);
+
+  assert.equal(h.player.paused(), true, 'replay must stop the old source immediately');
+  assert.equal(h.player.source, '/old-manifest', 'old source remains installed until a fresh intent is authorized');
+  finishFirst(renewalResponse(true));
+  await settleRenewal(h);
+
+  assert.equal(renewRequests.length, 2, 'the queued replay starts after the ordinary renewal settles');
+  assert.equal(renewRequests[1].body.get('newplayback'), '1', 'the queued request creates a new logical playback identity');
+  assert.equal(h.player.paused(), true, 'the old source never resumes while the new intent loads');
+  assert.equal(h.player.source, '/new-manifest');
+  h.player.emit('loadedmetadata');
+  await h.settle();
+  assert.equal(h.player.paused(), false, 'the explicitly requested replay starts after new metadata');
+});
+
+test('Play after ended during renewal backoff waits once and requests a new identity', async () => {
+  const h = harness(null, false, {authorizedPlayback: true, renewUrl: '/renew.php',
+    playlistUrl: '/old-manifest', sesskey: 'synthetic'});
+  const renewRequests = [];
+  h.context.fetch = (url, options) => {
+    if (url !== '/renew.php') return Promise.resolve({ok: true, json: () => Promise.resolve({})});
+    renewRequests.push(options);
+    return renewRequests.length === 1
+      ? Promise.resolve({ok: false, status: 503})
+      : Promise.resolve(renewalResponse(false));
+  };
+
+  h.player.emit('play');
+  h.player.emit('error');
+  await settleRenewal(h);
+  h.player.emit('ended');
+  h.player.play();
+  await settleRenewal(h);
+  assert.equal(h.player.paused(), true, 'ended replay cannot continue on the old identity during backoff');
+  assert.equal(renewRequests.length, 1);
+
+  await h.advance(29999);
+  assert.equal(renewRequests.length, 1, 'backoff prevents an early retry');
+  await h.advance(1);
+  assert.equal(renewRequests.length, 2, 'one retry starts when backoff expires');
+  assert.equal(renewRequests[1].body.get('newplayback'), '1');
+  assert.equal(h.player.paused(), true);
+  h.player.emit('loadedmetadata');
+  await h.settle();
+  assert.equal(h.player.paused(), false);
+});
+
+test('media error while explicitly paused renews the source without autoplay', async () => {
+  const h = harness(null, false, {authorizedPlayback: true, renewUrl: '/renew.php',
+    playlistUrl: '/old-manifest', sesskey: 'synthetic'});
+  const renewRequests = [];
+  h.context.fetch = (url, options) => {
+    if (url !== '/renew.php') return Promise.resolve({ok: true, json: () => Promise.resolve({})});
+    renewRequests.push(options);
+    return Promise.resolve(renewalResponse(true));
+  };
+
+  h.player.emit('play');
+  h.player.emit('pause');
+  h.player.emit('error');
+  await settleRenewal(h);
+  assert.equal(renewRequests.length, 1, 'the failed source is renewed');
+  await waitForSource(h);
+  h.player.emit('loadedmetadata');
+  await h.settle();
+  assert.equal(h.player.paused(), true, 'media recovery preserves the explicit Pause');
+});
+
+test('media error before the first Play renews source without starting playback', async () => {
+  const h = harness(null, false, {authorizedPlayback: true, renewUrl: '/renew.php',
+    playlistUrl: '/old-manifest', sesskey: 'synthetic'});
+  const renewRequests = [];
+  h.context.fetch = (url, options) => {
+    if (url !== '/renew.php') return Promise.resolve({ok: true, json: () => Promise.resolve({})});
+    renewRequests.push(options);
+    return Promise.resolve(renewalResponse(true));
+  };
+
+  h.player.emit('error');
+  await settleRenewal(h);
+  assert.equal(renewRequests.length, 1, 'the broken initial source is renewed');
+  await waitForSource(h);
+  h.player.emit('loadedmetadata');
+  await h.settle();
+  assert.equal(h.player.paused(), true, 'preload recovery does not start a player never explicitly played');
+});
+
+test('media error during active playback still resumes after source recovery', async () => {
+  const h = harness(null, false, {authorizedPlayback: true, renewUrl: '/renew.php',
+    playlistUrl: '/old-manifest', sesskey: 'synthetic'});
+  h.context.fetch = (url) => url === '/renew.php'
+    ? Promise.resolve(renewalResponse(true))
+    : Promise.resolve({ok: true, json: () => Promise.resolve({})});
+
+  h.player.emit('play');
+  h.player.emit('error');
+  await settleRenewal(h);
+  await waitForSource(h);
+  h.player.emit('loadedmetadata');
+  await h.settle();
+  assert.equal(h.player.paused(), false, 'an active playback intent is recovered after a media error');
 });
 
 function bodyOf(request) {

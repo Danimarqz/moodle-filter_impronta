@@ -162,7 +162,7 @@
   // El identificador de sesión no está aquí: lo guardó playlist.php en el
   // servidor. Este JS no puede latir por una sesión ajena porque no conoce
   // ninguna.
-  function sesion(player, cfg, el, analyticsV2, realtimeV2) {
+  function sesion(player, cfg, el, analyticsV2, realtimeV2, authorizedLifecycle) {
     if (!cfg.session) { return; }
 
     var vistos = 0;
@@ -215,6 +215,8 @@
       if ((terminada && !(forzar && destruida && flushPendiente)) || !iniciada || latidoEnVuelo || (!forzar && player.paused())) { return; }
       var enviados = Math.round(vistos);
       var heartbeatContext = cfg.session;
+      var heartbeatSourceGeneration = Number(cfg.authorizedSourceGeneration || 0);
+      var heartbeatSourceWasReady = cfg.authorizedSourceReady !== false;
       flushPendiente = false;
       latidoEnVuelo = true;
       var heartbeatPayload = {watchedSeconds: enviados};
@@ -235,7 +237,12 @@
         // Ignore a response belonging to a lease replaced while this request
         // was in flight; otherwise an old session can overwrite the renewed
         // V2/WSS context.
-        if (heartbeatContext !== cfg.session) { return; }
+        if (heartbeatContext !== cfg.session || !heartbeatSourceWasReady
+            || heartbeatSourceGeneration !== Number(cfg.authorizedSourceGeneration || 0)
+            || cfg.authorizedSourceReady === false) { return; }
+        if (typeof window.ImprontaAcceptFragmentLease === 'function') {
+          window.ImprontaAcceptFragmentLease(cfg, r);
+        }
         if (r && r.sessionId) {
           var nextSessionId = String(r.sessionId);
           try {
@@ -318,6 +325,10 @@
     var renovando = false;
 
     function recargar(reason) {
+      if (cfg.authorizedPlayback && authorizedLifecycle) {
+        authorizedLifecycle.renew(reason);
+        return;
+      }
       if (!cfg.renew) { try { player.pause(); } catch (e) {} return; }
       if (renovando) { return; }
       if (cfg.diagnostics) { cfg.diagnostics.record('recovery_' + reason); cfg.diagnostics.report('recovery'); }
@@ -348,6 +359,10 @@
       // Cached markup is not a started playback. Foreground must not bypass
       // the first explicit Play or revive a player belonging to another view.
       if (!iniciada || destruida) { return; }
+      if (cfg.authorizedPlayback && authorizedLifecycle) {
+        authorizedLifecycle.refresh();
+        return;
+      }
       var match = /[?&]e=(\d+)/.exec(cfg.playlistUrl || '');
       if (match && Number(match[1]) * 1000 < Date.now() + 60000 && !recuperado) { recargar('expiry'); }
     }
@@ -422,6 +437,7 @@
     loadCss(CFG.videojscss);
     applyColor(cfg.color);
     injectSafeAreaCSS();
+    var authorizedLifecycle = null;
 
     return loadScript(CFG.renewjs || CFG.videojs).then(function() {
       if (window.ImprontaPlaybackRenew && CFG.renew) {
@@ -549,9 +565,11 @@
           }
         };
         cfg.beforeAuthorizedReload = function() { if (realtimeV2) { realtimeV2.stop(); } };
-        if (cfg.renew && window.ImprontaAuthorizedLifecycle) { window.ImprontaAuthorizedLifecycle(player, cfg, cfg.renew); }
+        if (cfg.renew && window.ImprontaAuthorizedLifecycle) {
+          authorizedLifecycle = window.ImprontaAuthorizedLifecycle(player, cfg, cfg.renew);
+        }
         analytics(player, cfg);
-        sesion(player, cfg, el, analyticsV2, realtimeV2);
+        sesion(player, cfg, el, analyticsV2, realtimeV2, authorizedLifecycle);
         readyResolve();
       }).catch(function() {
         readyReject(new Error('watermark unavailable'));

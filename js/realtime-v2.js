@@ -51,7 +51,6 @@
       var interval = Number(credentials.intervalSeconds || cfg.realtimeIntervalSeconds || 12);
       cfg.realtimeIntervalSeconds = isFinite(interval) ? Math.max(12, Math.min(300, interval)) : 12;
       if (typeof credentials.authorizedPlayback === 'boolean') { cfg.authorizedPlayback = credentials.authorizedPlayback; }
-      if (Number(credentials.manifestExpiresAt) > 0) { cfg.fragmentLeaseExpiresAt = Number(credentials.manifestExpiresAt); }
       if (heartbeatTimer) {
         clearHeartbeat();
         heartbeatTimer = root.setInterval(sendHeartbeat, cfg.realtimeIntervalSeconds * 1000);

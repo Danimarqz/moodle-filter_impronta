@@ -162,6 +162,10 @@ $output = [
     'evicted' => !empty($respuesta['evicted']),
     'blocked' => !empty($respuesta['blocked']),
     'heartbeatSeconds' => isset($respuesta['heartbeatSeconds']) ? (int) $respuesta['heartbeatSeconds'] : 120,
+    // This is the fragment capability from playlist.php's backend response,
+    // not the Moodle HMAC expiry in the signed URL's `e` parameter.
+    'fragmentLeaseExpiresAt' => !empty($lease['mediaProof']) ? (int) ($lease['manifestExpiresAt'] ?? 0) : 0,
+    'authorizedPlayback' => !empty($lease['mediaProof']),
 ];
 if (
     isset($respuesta['realtime']) && is_array($respuesta['realtime'])

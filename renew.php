@@ -26,10 +26,12 @@
 require_once(__DIR__ . '/../../config.php');
 
 require_login();
-require_sesskey();
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 try {
+    // Keep Moodle's CSRF gate, but return a machine-readable denial for a
+    // stale/missing session key instead of an HTML exception page.
+    require_sesskey();
     $url = required_param('url', PARAM_RAW);
     $newplayback = optional_param('newplayback', false, PARAM_BOOL);
     echo json_encode(\filter_impronta\renewal::issue($url, (int) $USER->id, false, $newplayback));

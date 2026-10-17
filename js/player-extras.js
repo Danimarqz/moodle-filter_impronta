@@ -83,11 +83,15 @@ window.ImprontaPlayerExtras = function(cfg) {
         form.append('url', url);
         form.append('sesskey', cfg.sesskey);
         if (options && options.newPlayback) { form.append('newplayback', '1'); }
-        return fetch(cfg.renewUrl, {method: 'POST', body: form, credentials: 'same-origin'})
+        return fetch(cfg.renewUrl, {method: 'POST', body: form, credentials: 'same-origin',
+          signal: options && options.signal})
           .then(function(res) { if (!res.ok) { throw new Error('renew ' + res.status); } return res.json(); });
       });
-    cfg.beforeAuthorizedReload = function() { if (realtimeV2) { realtimeV2.stop(); } };
-    if (renew && window.ImprontaAuthorizedLifecycle) { window.ImprontaAuthorizedLifecycle(player, cfg, renew); }
+    cfg.beforeAuthorizedReload = function() {
+      if (realtimeV2) { realtimeV2.stop(); }
+    };
+    var authorizedLifecycle = renew && window.ImprontaAuthorizedLifecycle
+      ? window.ImprontaAuthorizedLifecycle(player, cfg, renew) : null;
     var queue = [];
     var analyticsHeartbeats = 0;
     var analyticsHeartbeatSeconds = cfg.heartbeatSeconds || 15;
@@ -205,6 +209,8 @@ window.ImprontaPlayerExtras = function(cfg) {
       }
       var lote = lotePendiente;
       var heartbeatContext = cfg.sessionUrl;
+      var heartbeatSourceGeneration = Number(cfg.authorizedSourceGeneration || 0);
+      var heartbeatSourceWasReady = cfg.authorizedSourceReady !== false;
       latidoEnVuelo = true;
       Promise.resolve().then(function() {
         var heartbeatPayload = {
@@ -226,7 +232,10 @@ window.ImprontaPlayerExtras = function(cfg) {
         // A playlist renewal may have replaced the signed context while this
         // request was in flight. Its response belongs to the old session and
         // must not overwrite the new V2/WSS context or block state.
-        if (heartbeatContext !== cfg.sessionUrl) {
+        if (heartbeatContext !== cfg.sessionUrl
+            || !heartbeatSourceWasReady
+            || heartbeatSourceGeneration !== Number(cfg.authorizedSourceGeneration || 0)
+            || cfg.authorizedSourceReady === false) {
           // The old request either succeeded against the old lease or failed;
           // never leave the Legacy state machine marked in-flight. If it
           // succeeded, discount it once without adopting stale credentials.
@@ -244,6 +253,9 @@ window.ImprontaPlayerExtras = function(cfg) {
           return;
         }
         r = r || {};
+        if (typeof window.ImprontaAcceptFragmentLease === 'function') {
+          window.ImprontaAcceptFragmentLease(cfg, r);
+        }
         if (r.sessionId) {
           var nextSessionId = String(r.sessionId);
           try {
@@ -381,6 +393,10 @@ window.ImprontaPlayerExtras = function(cfg) {
     // sessionId: lo recupera heartbeat.php) pasa a renovar la nueva sesion
     // sin que este JS tenga que saber nada.
     function recargarPlaylist(reason) {
+      if (cfg.authorizedPlayback && authorizedLifecycle) {
+        authorizedLifecycle.renew(reason);
+        return;
+      }
       if (!renew) { aviso(cfg.expiredText); return; }
       if (renewing) { return; }
       if (cfg.diagnostics) { cfg.diagnostics.record('recovery_' + reason); cfg.diagnostics.report('recovery'); }
@@ -403,6 +419,10 @@ window.ImprontaPlayerExtras = function(cfg) {
     }
 
     function refreshIfExpired() {
+      if (cfg.authorizedPlayback && authorizedLifecycle) {
+        authorizedLifecycle.refresh();
+        return;
+      }
       var match = /[?&]e=(\d+)/.exec(cfg.playlistUrl || '');
       if (match && Number(match[1]) * 1000 < Date.now() + 60000 && !recovered) {
         recargarPlaylist('expiry');

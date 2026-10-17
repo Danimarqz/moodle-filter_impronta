@@ -61,6 +61,7 @@ class renew extends \external_api {
     public static function execute_returns(): \external_single_structure {
         return new \external_single_structure([
             'playlistUrl' => new \external_value(PARAM_URL, 'Fresh playlist URL'),
+            'diagnosticUrl' => new \external_value(PARAM_URL, 'Safe playback diagnostics URL'),
             'eventsUrl' => new \external_value(PARAM_URL, 'Fresh analytics URL'),
             'sessionUrl' => new \external_value(PARAM_URL, 'Fresh heartbeat URL'),
             'batchUrl' => new \external_value(PARAM_URL, 'Fresh batch URL'),

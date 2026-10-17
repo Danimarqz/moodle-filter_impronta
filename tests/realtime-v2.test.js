@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(__dirname + '/../js/realtime-v2.js', 'utf8');
+const source = fs.readFileSync((process.env.IMPRONTA_PLUGIN_ROOT || __dirname + '/..') + '/js/realtime-v2.js', 'utf8');
 
 function playbackHarness(overrides = {}, fetchImpl) {
   const sent = [];
@@ -40,11 +40,12 @@ function playbackHarness(overrides = {}, fetchImpl) {
   };
   context.window = context;
   vm.runInNewContext(source, context);
-  const client = context.ImprontaRealtimeV2(player, {
+  const cfg = {
     enabled: true, realtimeUrl: '/realtime', realtimeSocketUrl: 'wss://example/ws',
     realtimeToken: 'signed', realtimeExpiresAt: Math.floor(Date.now() / 1000) + 3600,
     sessionId: 's1', videoId: 'v1', ...overrides,
-  });
+  };
+  const client = context.ImprontaRealtimeV2(player, cfg);
   async function settle() { for (let i = 0; i < 8; i++) await Promise.resolve(); }
   async function open() {
     player.emit('play');
@@ -52,8 +53,16 @@ function playbackHarness(overrides = {}, fetchImpl) {
     sockets[0].readyState = 1;
     sockets[0].onopen();
   }
-  return {player, client, sent, sockets, intervals, timeouts, settle, open};
+  return {player, client, cfg, sent, sockets, intervals, timeouts, settle, open};
 }
+
+test('WSS credential refresh cannot replace the authoritative HLS lease deadline', () => {
+  const h = playbackHarness({authorizedPlayback: true, fragmentLeaseExpiresAt: 5000});
+  const accepted = h.client.setCredentials({url: 'wss://example/ws', token: 'new-signed', expiresAt: 9999999999,
+    authorizedPlayback: true, manifestExpiresAt: 1200});
+  assert.equal(accepted, true);
+  assert.equal(h.cfg.fragmentLeaseExpiresAt, 5000);
+});
 
 test('starts before the Legacy heartbeat using cached bootstrap credentials from Moodle', async () => {
   let requests = 0;

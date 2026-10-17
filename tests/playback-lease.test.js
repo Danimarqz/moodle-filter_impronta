@@ -6,6 +6,8 @@ const hasPhp = spawnSync('php',['-v']).status === 0;
 test('PHP preserves a pinned lease across stale responses and cache loss, but replay signs another intent', {skip:!hasPhp},() => {
   const out = execFileSync('php',[join(__dirname,'playback-lease-fixture.php')],{encoding:'utf8'});
   assert.match(out,/control samePlayback=true sameP=true/);
+  assert.match(out,/firstLease signedDelta=20700 source=authorized\.expires_at proof="SYNTHETIC-signed-proof"/);
+  assert.match(out,/enrolment REJECTED/);
   assert.match(out,/proof="SYNTHETIC-signed-proof" samePlayback=true changedP=false/);
   assert.match(out,/expiredCache samePlayback=true changedP=false/);
   assert.match(out,/replay samePlayback=false changedP=true/);
