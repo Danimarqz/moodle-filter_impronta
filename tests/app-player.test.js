@@ -26,7 +26,7 @@ function harness(firstResponse, withV2 = false, subsequentResponse, options = {}
       'data-impronta-subject': 'student',
       'data-impronta-path': 'lesson.m3u8'
     },
-    getAttribute(name) { return this.attrs[name] || null; },
+    getAttribute(name) { return Object.hasOwn(this.attrs, name) ? this.attrs[name] : null; },
     setAttribute(name, value) { this.attrs[name] = value; },
     appendChild() {},
     textContent: ''
@@ -53,6 +53,7 @@ function harness(firstResponse, withV2 = false, subsequentResponse, options = {}
     }
   };
   if (options.playlist) element.attrs['data-impronta-playlist'] = options.playlist;
+  if (options.playbackRates !== undefined) element.attrs['data-impronta-playback-rates'] = options.playbackRates;
   if (options.diagnosticUrl) element.attrs['data-impronta-diagnostic'] = options.diagnosticUrl;
   if (withV2) {
     element.attrs['data-impronta-batch'] = '/batch';
@@ -97,6 +98,9 @@ function harness(firstResponse, withV2 = false, subsequentResponse, options = {}
     ImprontaWatermarkFit: {attach() {}},
     console
   };
+  if (options.bootstrapPlaybackRates !== undefined) {
+    context.window.improntaApp.playbackRates = options.bootstrapPlaybackRates;
+  }
   context.window.window = context.window;
   context.ImprontaAnalyticsV2 = () => {
     v2Calls.push('batch');
@@ -204,6 +208,32 @@ test('app players outside the configured list never send diagnostics', async () 
   await h.settle(); await h.player.play(); await h.advance(3500);
   assert.ok(h.requests.every(r => r.url !== '/diagnostics.js' && !r.url.includes('diagnostic')));
   h.player.dispose();
+});
+
+test('App forwards the Moodle marker playback-rate configuration to Video.js', async () => {
+  const h = harness(undefined, false, undefined, {playbackRates: '[0.5,0.75,1,1.25,1.5,2]'});
+  await h.settle();
+  assert.deepEqual(Array.from(h.videojsOptions().playbackRates), [0.5, 0.75, 1, 1.25, 1.5, 2]);
+  h.player.dispose();
+});
+
+test('legacy cached App markers without playback-rate attribute use bootstrap defaults', async () => {
+  const h = harness(undefined, false, undefined, {bootstrapPlaybackRates: [0.5, 0.75, 1, 1.25, 1.5, 2]});
+  await h.settle();
+  assert.deepEqual(Array.from(h.videojsOptions().playbackRates || []), [0.5, 0.75, 1, 1.25, 1.5, 2]);
+  h.player.dispose();
+});
+
+test('App omits playback-rate options for empty or invalid marker configuration', async () => {
+  for (const playbackRates of ['', '[]', 'not-json', '[0,-1,"2",null]', '[1.5,0]']) {
+    const h = harness(undefined, false, undefined, {
+      playbackRates,
+      bootstrapPlaybackRates: [0.5, 0.75, 1, 1.25, 1.5, 2]
+    });
+    await h.settle();
+    assert.equal(Object.hasOwn(h.videojsOptions(), 'playbackRates'), false, playbackRates);
+    h.player.dispose();
+  }
 });
 
 test('cached app markup starts a new intent only on Play, before loading media or telemetry', async () => {

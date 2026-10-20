@@ -37,6 +37,15 @@ namespace filter_impronta;
  */
 class player {
     /**
+     * Canonical playback rates shared by desktop renders and Moodle App bootstrap.
+     *
+     * @return array
+     */
+    public static function default_playback_rates(): array {
+        return [0.5, 0.75, 1, 1.25, 1.5, 2];
+    }
+
+    /**
      * URL de un fichero estático del plugin, con la versión como cache-buster.
      *
      * Sin el parámetro, el webview de la app se queda con la copia vieja del
@@ -103,11 +112,22 @@ class player {
             'authorizationgroupid' => '',
             'playbackid' => '',
             'mode' => '',
-            'playbackrates' => [0.5, 0.75, 1, 1.25, 1.5, 2],
+            'playbackrates' => self::default_playback_rates(),
             'audio' => false,
             'subtitles' => [],
         ];
         $options = array_merge($defaults, $options);
+        $playbackrates = [];
+        if (is_array($options['playbackrates'])) {
+            foreach ($options['playbackrates'] as $rate) {
+                $rate = (float) $rate;
+                if (is_finite($rate) && $rate > 0) {
+                    $playbackrates[] = $rate;
+                }
+            }
+            $playbackrates = array_values(array_unique($playbackrates));
+            sort($playbackrates, SORT_NUMERIC);
+        }
         $isaudio = !empty($options['audio']);
         $courseid = (int) $options['courseid'];
         $authorizationgroupid = (string) $options['authorizationgroupid'];
@@ -244,7 +264,8 @@ class player {
                 $authorizationgroupid,
                 $playbackid,
                 $mode,
-                $isaudio
+                $isaudio,
+                $playbackrates
             );
         }
 
@@ -310,19 +331,8 @@ HTML;
             // Con metadatos, video.js la recalcula con el tamaño real.
             : ['fluid' => true, 'aspectRatio' => '16:9'];
 
-        if (!empty($options['playbackrates']) && is_array($options['playbackrates'])) {
-            $normalized = [];
-            foreach ($options['playbackrates'] as $rate) {
-                $rate = (float) $rate;
-                if ($rate > 0) {
-                    $normalized[] = $rate;
-                }
-            }
-            if (!empty($normalized)) {
-                $normalized = array_values(array_unique($normalized));
-                sort($normalized, SORT_NUMERIC);
-                $setupconfig['playbackRates'] = $normalized;
-            }
+        if (!empty($playbackrates)) {
+            $setupconfig['playbackRates'] = $playbackrates;
         }
 
         // Video.js carga este polyfill bajo demanda cuando el navegador no
@@ -471,7 +481,8 @@ HTML;
         string $authorizationgroupid,
         string $playbackid,
         string $mode,
-        bool $isaudio
+        bool $isaudio,
+        array $playbackrates
     ): string {
         global $USER;
 
@@ -548,6 +559,7 @@ HTML;
             'revoked' => get_string('accessrevoked', 'filter_impronta'),
             'evicted' => get_string('sessionevicted', 'filter_impronta'),
             'expired' => get_string('sessionexpired', 'filter_impronta'),
+            'playback-rates' => json_encode($playbackrates, JSON_UNESCAPED_SLASHES),
         ];
         $attrs = '';
         foreach ($data as $key => $value) {

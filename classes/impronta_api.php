@@ -389,7 +389,8 @@ class impronta_api {
     }
 
     /**
-     * Reads server-issued context, never a client-supplied media proof.
+     * Reads server-issued context for six hours after its last write.
+     * Reads never refresh retention; expired media proofs remain usable for renewal.
      * @param string $path Class path.
      * @param int $userid Signed Moodle user.
      * @param string $playbackid Signed instance.
@@ -400,9 +401,9 @@ class impronta_api {
         if ($key === '' || $playbackid === '') {
             return [];
         }
-        $cache = playback_store::make(7 * DAYSECS);
+        $cache = playback_store::make(self::SESSION_MEMORY);
         $value = $cache->get('lease_' . $key);
-        return is_array($value) && time() - (int) ($value['at'] ?? 0) <= 7 * DAYSECS ? $value : [];
+        return is_array($value) && time() - (int) ($value['at'] ?? 0) < self::SESSION_MEMORY ? $value : [];
     }
 
     /**
@@ -438,7 +439,7 @@ class impronta_api {
             'manifestExpiresAt' => (int) ($authorized['expires_at'] ?? $old['manifestExpiresAt'] ?? 0),
             'realtime' => $rt ?: ($old['realtime'] ?? []),
         ];
-        $cache = playback_store::make(7 * DAYSECS);
+        $cache = playback_store::make(self::SESSION_MEMORY);
         $cache->set('lease_' . $key, $lease);
     }
 

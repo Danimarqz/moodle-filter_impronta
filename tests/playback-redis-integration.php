@@ -51,6 +51,29 @@ try {
     $assert(api::resolve_batch_session($path, $userid, 'forged-batch', 'forged-session', $p) === '', 'forged batch session is rejected');
     $assert(api::session_known($path, $userid, 'test-session-1', $p), 'previous renewal identity remains known');
 
+    $leasekey = 'lease_' . $key;
+    $cleanup[] = $leasekey;
+    $authorized = ['sessionId' => 'test-session-2', 'authorized' => [
+        'fragment_token' => 'synthetic-expired-media-proof', 'expires_at' => time() - 1,
+    ]];
+    api::remember_playback_lease($path, $userid, $p, $authorized);
+    $assert($redis->ttl($prefix . $leasekey) > 0 && $redis->ttl($prefix . $leasekey) <= 21600,
+        'playback lease has real six-hour TTL');
+    $lease = api::playback_lease($path, $userid, $p);
+    $lease['at'] = time() - 21540;
+    $redis->set($prefix . $leasekey, json_encode($lease), ['ex' => 60]);
+    $pausedlease = api::playback_lease($path, $userid, $p);
+    $assert(($pausedlease['mediaProof'] ?? '') === 'synthetic-expired-media-proof',
+        'pause under six hours retains expired media proof for authenticated renewal');
+    $assert($redis->ttl($prefix . $leasekey) <= 60, 'reading a lease does not extend its TTL');
+    api::remember_playback_lease($path, $userid, $p, $authorized);
+    $assert($redis->ttl($prefix . $leasekey) > 21590 && $redis->ttl($prefix . $leasekey) <= 21600,
+        'fresh lease response refreshes six-hour retention');
+    $lease['at'] = time() - 21601;
+    $redis->set($prefix . $leasekey, json_encode($lease), ['ex' => 604800]);
+    $assert(api::playback_lease($path, $userid, $p) === [],
+        'old seven-day entry is rejected after six hours since its last write');
+
     // Snapshot a physical MUC key, then delete cache before its first read.
     $legacylogical = sha1('synthetic-legacy-' . $path);
     $cleanup[] = $legacylogical;

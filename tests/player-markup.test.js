@@ -5,6 +5,19 @@ const {readFileSync} = require('node:fs');
 const {join} = require('node:path');
 
 const php = readFileSync(join(__dirname, '..', 'classes', 'player.php'), 'utf8');
+const mobile = readFileSync(join(__dirname, '..', 'classes', 'output', 'mobile.php'), 'utf8');
+
+test('el marcador App transmite las tasas configuradas del mismo render', () => {
+  const render = php.slice(php.indexOf('public static function render'));
+  const markerCall = render.slice(render.indexOf('return self::app_marker('), render.indexOf(');', render.indexOf('return self::app_marker(')));
+  const marker = php.slice(php.indexOf('private static function app_marker('));
+  assert.match(markerCall, /\$playbackrates/);
+  assert.match(marker, /'playback-rates'\s*=>\s*json_encode\(\$playbackrates/);
+  assert.match(php, /\$setupconfig\['playbackRates'\]\s*=\s*\$playbackrates/);
+  assert.match(php, /public static function default_playback_rates\(\): array\s*\{\s*return \[0\.5, 0\.75, 1, 1\.25, 1\.5, 2\];/);
+  assert.match(php, /'playbackrates'\s*=>\s*self::default_playback_rates\(\)/);
+  assert.match(mobile, /'playbackRates'\s*=>\s*player::default_playback_rates\(\)/);
+});
 
 // video.js solo pasa la fuente por los source handlers (VHS/MSE) cuando alguien
 // llama a src(). Con el markup en solitario el <video> se queda en la pila HLS

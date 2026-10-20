@@ -85,6 +85,7 @@ class mobile {
             'realtimev2js' => player::asset_url('js/realtime-v2.js'),
             'renewjs' => player::asset_url('js/playback-renew.js'),
             'diagnosticsjs' => player::asset_url('js/playback-diagnostics.js'),
+            'playbackRates' => player::default_playback_rates(),
         ], JSON_UNESCAPED_SLASHES);
         $appjs = json_encode(player::asset_url('js/app-player.js'), JSON_UNESCAPED_SLASHES);
 

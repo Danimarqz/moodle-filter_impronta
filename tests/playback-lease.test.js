@@ -11,5 +11,7 @@ test('PHP preserves a pinned lease across stale responses and cache loss, but re
   assert.match(out,/proof="SYNTHETIC-signed-proof" samePlayback=true changedP=false/);
   assert.match(out,/expiredCache samePlayback=true changedP=false/);
   assert.match(out,/replay samePlayback=false changedP=true/);
+  assert.match(out,/pausedUnderSixHours proofPreserved=true/);
+  assert.match(out,/leaseAfterSixHours expired=true/);
   assert.doesNotMatch(out,/ACCEPTED/);
 });

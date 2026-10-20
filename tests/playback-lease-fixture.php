@@ -68,6 +68,13 @@ namespace {
     parse_str(parse_url($renewed['playlistUrl'], PHP_URL_QUERY), $newParams);
     echo 'stale sameSession=' . json_encode($lease['sessionId']===$authorized['sessionId']) . ' proof=' . json_encode($lease['mediaProof']) . ' samePlayback=' . json_encode($renewed['samePlayback']) . ' changedP=' . json_encode($newParams['p']!==$p) . "\n";
     \filter_impronta\impronta_api::remember_playback_lease($path, $userid, $p, $authorized);
+    foreach (cache::$data as $key=>$value) { if (str_starts_with($key, 'lease_')) { cache::$data[$key]['at'] = time() - 21540; } }
+    $pausedlease = \filter_impronta\impronta_api::playback_lease($path, $userid, $p);
+    echo 'pausedUnderSixHours proofPreserved=' . json_encode(($pausedlease['mediaProof'] ?? '') === $authorized['authorized']['fragment_token']) . "\n";
+    foreach (cache::$data as $key=>$value) { if (str_starts_with($key, 'lease_')) { cache::$data[$key]['at'] = time() - 21601; } }
+    $expiredlease = \filter_impronta\impronta_api::playback_lease($path, $userid, $p);
+    echo 'leaseAfterSixHours expired=' . json_encode($expiredlease === []) . "\n";
+    \filter_impronta\impronta_api::remember_playback_lease($path, $userid, $p, $authorized);
     foreach (cache::$data as $key=>$value) { if (str_starts_with($key, 'lease_')) { cache::$data[$key]['at'] = time() - 8*DAYSECS; } }
     $aged = \filter_impronta\renewal::issue($url, $userid, true, false);
     parse_str(parse_url($aged['playlistUrl'], PHP_URL_QUERY), $agedParams);

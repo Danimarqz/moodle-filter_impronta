@@ -425,6 +425,19 @@
       expired: el.getAttribute('data-impronta-expired')
     };
     cfg.diagnosticUrl = el.getAttribute('data-impronta-diagnostic') || '';
+    var markerRates = el.getAttribute('data-impronta-playback-rates');
+    var playbackRates = markerRates === null ? CFG.playbackRates : null;
+    if (markerRates !== null) {
+      try {
+        playbackRates = JSON.parse(markerRates);
+      } catch (e) {}
+    }
+    if (Array.isArray(playbackRates) && playbackRates.length
+            && playbackRates.every(function(rate) {
+              return typeof rate === 'number' && isFinite(rate) && rate > 0;
+            })) {
+      cfg.playbackRates = playbackRates;
+    }
     cfg.playlistUrl = cfg.playlist;
     if (!cfg.playlist) { return; }
     return build(el, cfg);
@@ -469,13 +482,15 @@
       el.appendChild(video);
 
       var freshStart = cfg.renew && typeof window.ImprontaPlaybackStart === 'function';
-      var player = videojs(video, {
+      var playerOptions = {
         fluid: true,
         playsinline: true,
         poster: cfg.poster || undefined,
         'vtt.js': CFG.vttjs,
         sources: freshStart ? [] : [{src: cfg.playlistUrl, type: 'application/x-mpegURL'}]
-      });
+      };
+      if (cfg.playbackRates) { playerOptions.playbackRates = cfg.playbackRates; }
+      var player = videojs(video, playerOptions);
       var analyticsV2 = null;
       var realtimeV2 = null;
       if (window.ImprontaPlaybackDiagnostics) {
